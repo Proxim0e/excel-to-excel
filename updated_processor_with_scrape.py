@@ -2,25 +2,13 @@
 """
 Интегрированный скрипт с параллельным скрапингом лотов.
 
-Изменение по вашей просьбе:
-- При записи участников заполняется только колонка E (Ofertant, цена, формулы).
-- Для каждого следующего участника создаётся новая колонка непосредственно перед колонкой
-  "Note" (чтобы Note всегда оставалась последней). Новая колонка создаётся методом
-  insert_cols и затем копируются стили/ширина из колонки E в новую колонку.
-- Формулы для каждой новой колонки устанавливаются программно (=<col>8/A1 и =<col>8/D8).
-- Если участников нет — E11 заполняется текстом "Achiziţia nu a avut loc" и оформляется.
-- Если процент >= 130% — ячейка процента выделяется красным; если ВСЕ участники лота >=130%,
-  вкладка помечается красным.
-- Парсинг цен, параллелизм и остальная логика сохранены.
+Изменение: проверяем, сколько лотов уже создано в шаблоне (максимальный номер lot N).
+- Если APPEND_TO_EXISTING == False (по умолчанию) — мы НЕ трогаем существующие листы с номерами <= N.
+  Начинаем создавать и заполнять листы только с номера N+1.
+- Если APPEND_TO_EXISTING == True — поведение старое (дополнение существующих листов возможно).
 
-Примечание о копировании форматов: openpyxl поддерживает копирование стиля ячейки
-за ячейкой — и мы копируем font, fill, border, number_format, alignment и protection.
-Копирование merged-диапазонов для новых колонок не выполняется (можно добавить, но может
-сложниться), обычно шаблон у вас настроен так, что колонки для участников — простые,
-а крупные merged-области (заголовок, примечания) остаются нетронутыми.
-
-Автор: Proxim0e (адаптация)
-Дата: 2025-11-20
+Остальная логика сохранена: вставка колонок перед Note, копирование стилей из колонки E,
+формулы ставятся вручную, оформление E11 при отсутствии участников, выделение процентов >=130% и т.д.
 """
 import os
 import re
@@ -32,8 +20,7 @@ import requests
 from bs4 import BeautifulSoup
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
-from openpyxl.styles import Font, PatternFill, Alignment, Border
-from openpyxl.cell import Cell
+from openpyxl.styles import Font, PatternFill, Alignment
 
 # Папка для ресурсов
 RESOURCE_DIR = './resources'
@@ -41,16 +28,19 @@ TEMPLATE_FILE = os.path.join(RESOURCE_DIR, 'sample_model.xlsx')
 
 # Ссылки и скрапинг
 BASE = "https://achizitii.md"
-TENDER_URL = "https://achizitii.md/ro/public/tender/21463176/"
+TENDER_URL = "https://achizitii.md/ro/public/tender/21463176"  # пример, можно заменить
 HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; scraper/1.0; +https://example.com/bot)"}
 LOT_LINK_RE = re.compile(r'/ro/public/tender/\d+/lot/\d+/?$')
 
 # Параметр параллелизма
 MAX_WORKERS = 16  # можно настроить
 
+# Флаг: если False — НЕ изменять уже существующие листы (до max_existing). True — старое поведение (дополнять)
+APPEND_TO_EXISTING = False
+
 # Названия столбцов/целевых ячеек
 COLS = {
-    'nr_lot':            ['Nr. Lot', 'Nr Lot'],
+    'nr_lot':            ['Nr. Lot', 'Nr Lot', 'Nr lot', 'Nr. lot'],
     'denumire':          ['Denumirea Lotului\n04.09.2025', 'Denumirea Lotului', 'Denumire Lot NEW2'],
     'specificatie':      ['Specificația Tehnică\n04.09.2025', 'Specificația Тehnică', 'Specificarea техническая NEW2'],
     'unitate_masura':    ['Unitatea de măsură'],
@@ -73,8 +63,7 @@ NOT_HELD_FONT_WHITE = Font(color="FFFFFF", bold=True)
 HIGH_PERCENT_FILL = PatternFill(start_color="FF0000", end_color="FF0000", fill_type="solid")  # red
 HIGH_PERCENT_FONT = Font(color="000000", bold=True)
 
-# threshold for percent (130% = 1.3)
-PERCENT_THRESHOLD = 1.3
+PERCENT_THRESHOLD = 1.3  # 130%
 
 # -------------------
 # Утилиты и парсинг
@@ -252,10 +241,6 @@ def normalize_spaces(s):
 # Helpers for column copying
 # -------------------
 def copy_column_styles(ws, src_col_idx, dst_col_idx, max_row):
-    """
-    Копирует стиль (font, fill, border, number_format, alignment, protection) и ширину из src -> dst.
-    Не копирует значения.
-    """
     src_letter = get_column_letter(src_col_idx)
     dst_letter = get_column_letter(dst_col_idx)
     # width
@@ -268,7 +253,6 @@ def copy_column_styles(ws, src_col_idx, dst_col_idx, max_row):
     for r in range(1, max_row + 1):
         src_cell = ws.cell(row=r, column=src_col_idx)
         dst_cell = ws.cell(row=r, column=dst_col_idx)
-        # Copy style attributes
         try:
             dst_cell.font = src_cell.font.copy()
         except Exception:
@@ -323,6 +307,13 @@ def main():
                     continue
         print(f"Найдено в шаблоне {len(parent_lot_sheets)} готовых листов.")
 
+        # вычисляем максимальный существующий номер лота в шаблоне
+        max_existing = max(parent_lot_sheets.keys()) if parent_lot_sheets else 0
+        print(f"[INFO] Максимальный существующий номер лота в шаблоне: {max_existing}")
+        if not APPEND_TO_EXISTING:
+            print(f"[INFO] APPEND_TO_EXISTING=False: НЕ изменяю листы с номерами <= {max_existing}. "
+                  f"Создаю/обрабатываю только лоты с номера {max_existing + 1} и выше.")
+
         # Заголовки родительского файла
         headers = [cell.value for cell in ws_parent[1]]
         print("Заголовки в родительском файле:", headers)
@@ -332,7 +323,6 @@ def main():
             for c, cell in enumerate(ws[1], start=1):
                 if cell.value and isinstance(cell.value, str) and cell.value.strip().lower() == "note":
                     return c
-            # fallback: если не найден — возвращаем последнюю существующую колонку +1 (т.е. Note будет добавлена в конец)
             return ws.max_column + 1
 
         note_col_template = find_note_col(template_sheet)
@@ -352,24 +342,35 @@ def main():
             denumire = safe_row_get(row, COLS['denumire'], headers)
             specificatie_data = safe_row_get(row, COLS['specificatie'], headers)
 
+            # Если в шаблоне уже есть лист с таким номером
             if nr_lot_int in parent_lot_sheets:
-                ws_target = parent_lot_sheets[nr_lot_int]
-                if specificatie_data:
-                    existing = ws_target["B11"].value or ""
-                    add = str(specificatie_data).strip()
-                    if add and add not in existing:
-                        new_val = (existing + "\n" + add).strip() if existing else add
-                        ws_target["B11"] = new_val
-                        print(f"[Excel] Дополнена спецификация для lot {nr_lot_int}")
-                continue
+                if APPEND_TO_EXISTING:
+                    # старое поведение: можно дополнять спецификацию в B11 (как раньше)
+                    ws_target = parent_lot_sheets[nr_lot_int]
+                    if specificatie_data:
+                        existing = ws_target["B11"].value or ""
+                        add = str(specificatie_data).strip()
+                        if add and add not in existing:
+                            new_val = (existing + "\n" + add).strip() if existing else add
+                            ws_target["B11"] = new_val
+                            print(f"[Excel] Дополнена спецификация для lot {nr_lot_int}")
+                    continue
+                else:
+                    # NEW: если APPEND_TO_EXISTING=False и номер лота <= max_existing, пропускаем его
+                    if nr_lot_int <= max_existing:
+                        print(f"[SKIP] Лист для lot {nr_lot_int} уже существует в шаблоне (<= {max_existing}) — пропускаю.")
+                        continue
+                    # теоретически здесь не попадём, т.к. parent_lot_sheets содержит этот номер,
+                    # но условие оставлено для ясности
 
+            # иначе — создаём новый лист на основе шаблона и заполняем его
             new_sheet = wb_child.copy_worksheet(template_sheet)
             new_title = f"lot {nr_lot_int}"
             new_sheet.title = new_title
             parent_lot_sheets[nr_lot_int] = new_sheet
             print(f"[Excel] Создаем лист: {new_sheet.title}")
 
-            # Записываем denumire в target cell (как делаем для B11) — принудительно "Lot nr. N {denumire}"
+            # Записываем denumire в target cell (B1)
             den_text_clean = clean_denumire_for_B1(denumire)
             value_to_write = normalize_spaces(f"Lot nr. {nr_lot_int} {den_text_clean}".strip())
             for cell in TARGET_MAP['denumire']:
@@ -382,9 +383,7 @@ def main():
 
             # Заполнение остальных целей (кроме denumire)
             for key, target_cells in TARGET_MAP.items():
-                if key == "denumire":
-                    continue
-                if key == "specificatie":
+                if key == "denumire" or key == "specificatie":
                     continue
                 value = safe_row_get(row, COLS[key], headers)
                 if value is not None:
@@ -438,6 +437,11 @@ def main():
                 print(f"[WARN] Не удалось извлечь номер лота из title для URL {lot_url!r} title={title!r}. Пропускаю.")
                 continue
 
+            # NEW: если lot_number <= max_existing и APPEND_TO_EXISTING==False — пропускаем обновление участников
+            if (not APPEND_TO_EXISTING) and lot_number <= max_existing:
+                print(f"[SKIP] Пропускаю обновление участников для lot {lot_number} — этот лист существовал в шаблоне (<= {max_existing}).")
+                continue
+
             if lot_number not in parent_lot_sheets:
                 print(f"[WARN] Для lot {lot_number} нет листа в книге (пропуск обновления участников).")
                 continue
@@ -452,7 +456,6 @@ def main():
                 return ws_loc.max_column + 1
 
             note_col = find_note_col_ws(ws)
-            # Ensure note_col is at least >5; if note is before E for some reason, set to E+1
             if note_col <= 5:
                 note_col = 6
 
@@ -466,60 +469,50 @@ def main():
                     ws["E11"].font = NOT_HELD_FONT_WHITE
                 except Exception:
                     pass
-                # помечаем вкладку листа тем же цветом
                 try:
                     ws.sheet_properties.tabColor = "001f4d"
                 except Exception:
                     pass
                 continue
 
-            # Если есть участники: заполняем E для первого, остальные создаём копией оформления колонки E и вставляем перед Note
-            max_row = ws.max_row if ws.max_row > 1 else 50  # безопасный максимум для копирования стилей
+            # Если есть участники: записываем первого в E; для остальных вставляем колонки перед Note и копируем стиль E
+            max_row = ws.max_row if ws.max_row > 1 else 50
             src_col = 5  # E
             high_flags = []
 
             for idx, (raw_name, raw_price) in enumerate(participants, start=1):
-                # For idx==1 -> write directly into E
                 if idx == 1:
                     target_col = src_col
                 else:
-                    # insert new column immediately before current note_col
-                    insert_at = note_col  # insert at this index, note will shift right
+                    insert_at = note_col
                     ws.insert_cols(insert_at, amount=1)
                     target_col = insert_at
-                    # copy styles from src_col (E) into new column (target_col)
                     copy_column_styles(ws, src_col, target_col, max_row)
-                    # after insertion note_col increases by 1
                     note_col += 1
 
                 col_letter = get_column_letter(target_col)
                 name = clean_company_name(raw_name) or "(без имени)"
                 price_value = parse_price_to_number(raw_price) if raw_price else None
 
-                # cells
                 cell_name = f"{col_letter}2"
                 cell_price = f"{col_letter}8"
                 cell_formula_divA1 = f"{col_letter}7"
                 cell_formula_divD8 = f"{col_letter}9"
 
-                # write ofertant
                 ws[cell_name] = f"Ofertant: {name}"
                 try:
                     ws[cell_name].font = Font(bold=True)
                 except Exception:
                     pass
 
-                # write price (only numeric)
                 if price_value is not None:
                     ws[cell_price] = price_value
                 else:
                     ws[cell_price] = ""
 
-                # formulas
                 ws[cell_formula_divA1] = f"={col_letter}8/A1"
                 ws[cell_formula_divD8] = f"={col_letter}8/D8"
 
-                # evaluate percent with D8 if possible and set red style if >= threshold
                 is_high = False
                 try:
                     d8_raw = ws["D8"].value
