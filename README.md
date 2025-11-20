@@ -1,25 +1,18 @@
-```text
-Excel Lot MVP
---------------
+# Excel Lot MVP
 
-В репозитории:
-- excel_lot_mvp.py — основной скрипт (переместите его из .venv/Scripts в корень или в папку scripts/)
-- requirements.txt — зависимости
-- install_deps.bat — Windows helper (создаёт .venv и устанавливает зависимости)
-- install_deps.sh — Unix helper
-- .gitignore — исключает .venv, .idea, артефакты
+Краткое описание
+- Скрипт переносит строки (лоты) из "родительского" Excel-файла в копии шаблонного `sample_model.xlsx` и автоматически формирует листы "lot N", заполняя заголовки, спецификации и данные по участникам (скрапит участников с сайта тендера).
+- Файл-скрипт по умолчанию: `updated_processor_with_scrape.py`.
 
-Как запустить (Windows):
-1. Склонируйте репозиторий.
-2. Откройте PowerShell в папке проекта.
-3. Запустите install_deps.bat.
-4. Активируйте окружение: call .venv\Scripts\activate.bat
-5. Запустите: python excel_lot_mvp.py
+Что в репозитории
+- `updated_processor_with_scrape.py` — основной рабочий скрипт.
+- `requirements.txt` — зависимости Python.
+- `install_deps.bat` / `install_deps.sh` — helper-скрипты для создания venv и установки зависимостей (Windows / Unix).
+- `resources/sample_model.xlsx` — шаблон дочернего файла (должен быть в папке `resources`).
+- `.gitignore` — исключает `.venv`, `__pycache__`, выходные файлы.
 
-Linux/macOS:
-1. ./install_deps.sh
-2. source .venv/bin/activate
-3. python excel_lot_mvp.py
-
-Примечание:
-- Не коммитьте .venv и выходные файлы (например, ++lots_result.xlsx). Они включены в .gitignore.
+Требования
+- Python 3.10+ (или совместимая версия).
+- Установите зависимости:
+  ````bash
+  python -m pip install -r requirements.txt
