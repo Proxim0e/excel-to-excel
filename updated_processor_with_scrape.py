@@ -53,6 +53,8 @@ from bs4 import BeautifulSoup
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 from openpyxl.styles import Font, PatternFill, Alignment
+from copy import copy
+from openpyxl.worksheet.worksheet import Worksheet
 
 # ---------------------------------------------------------------------------
 # Конфигурация (настраивайте при необходимости)
@@ -338,46 +340,50 @@ def normalize_spaces(s: Optional[str]) -> str:
     return re.sub(r'\s+', ' ', str(s)).strip()
 
 
-def copy_column_styles(ws, src_col_idx: int, dst_col_idx: int, max_row: int) -> None:
+def copy_column_styles(ws: Worksheet, src_col_idx: int, dst_col_idx: int, max_row: int) -> None:
     """
     Копирует стиль, формат и ширину из src_col_idx в dst_col_idx для строк от 1 до max_row.
     Не копирует значения.
     """
     src_letter = get_column_letter(src_col_idx)
     dst_letter = get_column_letter(dst_col_idx)
-    # ширина колонки
+
+    # Ширина колонки
     try:
-        if ws.column_dimensions.get(src_letter) and ws.column_dimensions.get(src_letter).width:
-            ws.column_dimensions[dst_letter].width = ws.column_dimensions[src_letter].width
+        src_dim = ws.column_dimensions.get(src_letter)
+        if src_dim and src_dim.width is not None:
+            ws.column_dimensions[dst_letter].width = src_dim.width
     except Exception:
         pass
 
     for r in range(1, max_row + 1):
         src_cell = ws.cell(row=r, column=src_col_idx)
         dst_cell = ws.cell(row=r, column=dst_col_idx)
+
+        # Стиль и формат (без устаревшего .copy())
         try:
-            dst_cell.font = src_cell.font.copy()
-        except Exception:
+            dst_cell.font = copy(src_cell.font)
+        except AttributeError:
             pass
         try:
-            dst_cell.fill = src_cell.fill.copy()
-        except Exception:
+            dst_cell.fill = copy(src_cell.fill)
+        except AttributeError:
             pass
         try:
-            dst_cell.border = src_cell.border.copy()
-        except Exception:
+            dst_cell.border = copy(src_cell.border)
+        except AttributeError:
             pass
         try:
             dst_cell.number_format = src_cell.number_format
-        except Exception:
+        except AttributeError:
             pass
         try:
-            dst_cell.alignment = src_cell.alignment.copy()
-        except Exception:
+            dst_cell.alignment = copy(src_cell.alignment)
+        except AttributeError:
             pass
         try:
-            dst_cell.protection = src_cell.protection.copy()
-        except Exception:
+            dst_cell.protection = copy(src_cell.protection)
+        except AttributeError:
             pass
 
 
@@ -416,7 +422,7 @@ def main() -> None:
                 try:
                     num = int(m.group(1))
                     parent_lot_sheets[num] = wb_child[sname]
-                except Exception:
+                except AttributeError:
                     continue
         print(f"Найдено в шаблоне {len(parent_lot_sheets)} готовых листов.")
 
