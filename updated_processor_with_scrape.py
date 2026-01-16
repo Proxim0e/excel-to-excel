@@ -54,6 +54,14 @@ from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 from openpyxl.styles import Font, PatternFill, Alignment
 
+# PDF processing modules (optional, graceful degradation if not available)
+try:
+    from pdf_processor import process_lot_pdfs, process_lot_pdfs_universal
+    PDF_MODULES_AVAILABLE = True
+except ImportError:
+    PDF_MODULES_AVAILABLE = False
+    print("[WARN] PDF processing modules not available. Install dependencies: pip install PyPDF2 pytesseract Pillow pdf2image")
+
 # ---------------------------------------------------------------------------
 # Конфигурация (настраивайте при необходимости)
 # ---------------------------------------------------------------------------
@@ -75,6 +83,11 @@ MAX_WORKERS: int = 16          # параллелизм для скачиван�
 # False (по умолчанию) — НЕ добавляем новые данные в листы с lot <= max_existing,
 # True  — дополняем существующие листы (старое поведение)
 APPEND_TO_EXISTING: bool = False
+
+# PDF Processing Configuration
+ENABLE_PDF_PROCESSING: bool = True       # включить обработку PDF
+ENABLE_OCR: bool = True                  # включить OCR для PDF-изображений
+PDF_BASE_DIR: str = os.path.join(RESOURCE_DIR, 'pdfs')  # папка для хранения PDF
 
 # Список возможных заголовков колонок в родительском файле (можно расширить)
 COLS = {
@@ -703,6 +716,69 @@ def main() -> None:
                     print(f"[EXCEL] lot {lot_number}: все участники >={int(PERCENT_THRESHOLD*100)}% -> вкладка помечена красным")
             except Exception:
                 pass
+
+        # ---------------------------
+        # Обработка PDF (поиск, загрузка, извлечение данных)
+        # ---------------------------
+        if ENABLE_PDF_PROCESSING and PDF_MODULES_AVAILABLE:
+            print("\n" + "="*70)
+            print("[PDF] Начинаем обработку PDF файлов...")
+            print("="*70)
+            
+            try:
+                # Обработка PDF для каждого лота
+                for r in results:
+                    lot_url = r.get('url')
+                    title = r.get('title')
+                    participants = r.get('participants') or []
+                    
+                    # Извлекаем номер лота
+                    lot_number: Optional[int] = None
+                    if title:
+                        m = re.search(r'Lot(?:ul)?\s*nr\.?\s*\.*\s*(\d+)', title, flags=re.I)
+                        if m:
+                            lot_number = int(m.group(1))
+                    
+                    if lot_number is None or lot_number not in parent_lot_sheets:
+                        continue
+                    
+                    # Пропускаем обработку PDF для старых лотов (если APPEND_TO_EXISTING == False)
+                    if (not APPEND_TO_EXISTING) and lot_number <= max_existing:
+                        print(f"[PDF] Пропускаю обработку PDF для lot {lot_number} (существовал в шаблоне)")
+                        continue
+                    
+                    ws = parent_lot_sheets[lot_number]
+                    
+                    # Обработка PDF для участников
+                    if participants:
+                        process_lot_pdfs(
+                            lot_url=lot_url,
+                            lot_number=lot_number,
+                            worksheet=ws,
+                            participants=participants,
+                            base_pdf_dir=PDF_BASE_DIR,
+                            enable_ocr=ENABLE_OCR
+                        )
+                    
+                    # Также попытка обработать универсальные PDF
+                    process_lot_pdfs_universal(
+                        lot_url=lot_url,
+                        lot_number=lot_number,
+                        worksheet=ws,
+                        base_pdf_dir=PDF_BASE_DIR,
+                        enable_ocr=ENABLE_OCR
+                    )
+                
+                print("\n[PDF] Обработка PDF завершена!")
+                
+            except Exception as e:
+                print(f"[PDF] Ошибка при обработке PDF: {e}")
+                import traceback
+                traceback.print_exc()
+        
+        elif ENABLE_PDF_PROCESSING and not PDF_MODULES_AVAILABLE:
+            print("\n[WARN] Обработка PDF включена, но модули не доступны.")
+            print("[WARN] Установите зависимости: pip install PyPDF2 pytesseract Pillow pdf2image")
 
         # ---------------------------
         # Сохранение итоговой книги
