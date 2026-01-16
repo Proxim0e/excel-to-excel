@@ -70,10 +70,15 @@ PDF_BASE_DIR: str = './resources/pdfs' # Storage directory
 ✅ All dependencies scanned - **0 vulnerabilities found**
 ✅ CodeQL analysis - **0 alerts**
 
+### Security Fix Applied
+⚠️ **Initial Issue**: Pillow 10.2.0 had a buffer overflow vulnerability (CVE)
+✅ **Resolution**: Upgraded to Pillow 10.3.0 (patched version)
+✅ **Verification**: All tests passing, no vulnerabilities detected
+
 ### Dependencies Added
 - PyPDF2==3.0.1
 - pytesseract==0.3.10
-- Pillow==10.2.0
+- Pillow==10.3.0 (upgraded from 10.2.0 for security)
 - pdf2image==1.17.0
 
 ### External Dependencies
