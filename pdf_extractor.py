@@ -38,7 +38,11 @@ EXTRACT_FIELDS = {
         r'Denumirea\s+modelului[:\s]*([^\n]+)',
     ],
     'specification': [
+        # Multi-line specification pattern:
+        # Matches "Specificarea tehnică deplină propusă de către ofertant:"
+        # followed by text that continues until an empty line is found
         r'Specificarea\s+tehnic[ăa]\s+deplin[ăa]\s+propus[ăa]\s+de\s+c[ăa]tre\s+ofertant[:\s]*([^\n]+(?:\n(?!\s*$)[^\n]+)*)',
+        # Shorter variants
         r'Specificare\s+tehnic[ăa][:\s]*([^\n]+(?:\n(?!\s*$)[^\n]+)*)',
         r'Technical\s+specification[:\s]*([^\n]+(?:\n(?!\s*$)[^\n]+)*)',
     ],

@@ -22,12 +22,12 @@ from bs4 import BeautifulSoup
 PDF_KEYWORDS = [
     r'anexa\s*22',
     r'anexa22',
-    r'specificat[ií][ií]\s+tehnic[eă]',
-    r'spec[\s._-]?tehnic',
-    r'fisa[\s._-]?tehnica',
-    r'fișa\s+tehnic[ăa]',
-    r'caiet\s+de\s+sarcini',
-    r'propunere\s+tehnic[ăa]',
+    r'specificat[iíî]+\s+tehnic[eăa]',  # Romanian: "specificatii tehnice", "specificații tehnice"
+    r'spec[\s._-]?tehnic',              # Abbreviated forms: "spec tehnic", "spec_tehnic"
+    r'fisa[\s._-]?tehnica',             # "fisa tehnica", "fisa_tehnica"
+    r'fișa\s+tehnic[ăa]',               # Romanian with diacritics
+    r'caiet\s+de\s+sarcini',           # "caiet de sarcini" (requirements document)
+    r'propunere\s+tehnic[ăa]',         # "propunere tehnica" (technical proposal)
 ]
 
 # Compile regex patterns for efficiency

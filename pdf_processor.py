@@ -18,6 +18,11 @@ from pdf_extractor import extract_pdf_data
 from excel_pdf_updater import update_operator_column_with_pdf, update_lot_sheet_with_pdf
 
 
+# Cache for extracted PDF data to avoid re-processing
+# Key: PDF file path, Value: extracted data dictionary
+_pdf_data_cache: Dict[str, Dict[str, Optional[str]]] = {}
+
+
 def process_lot_pdfs(
     lot_url: str,
     lot_number: int,
@@ -75,13 +80,21 @@ def process_lot_pdfs(
             
             pdf_path = pdf_info['local_path']
             
-            # Extract data from PDF
-            pdf_data = extract_pdf_data(pdf_path, force_ocr=False)
-            
-            # If no data extracted and OCR is enabled, try with OCR
-            if enable_ocr and not any(pdf_data.get(k) for k in ['producer', 'country', 'model']):
-                print(f"[PDF_PROCESSOR] Retrying with OCR...")
-                pdf_data = extract_pdf_data(pdf_path, force_ocr=True)
+            # Check cache first
+            if pdf_path in _pdf_data_cache:
+                print(f"[PDF_PROCESSOR] Using cached data for {pdf_path}")
+                pdf_data = _pdf_data_cache[pdf_path]
+            else:
+                # Extract data from PDF
+                pdf_data = extract_pdf_data(pdf_path, force_ocr=False)
+                
+                # If no data extracted and OCR is enabled, try with OCR
+                if enable_ocr and not any(pdf_data.get(k) for k in ['producer', 'country', 'model']):
+                    print(f"[PDF_PROCESSOR] Retrying with OCR...")
+                    pdf_data = extract_pdf_data(pdf_path, force_ocr=True)
+                
+                # Cache the extracted data
+                _pdf_data_cache[pdf_path] = pdf_data
             
             # Use the first successful extraction
             if any(pdf_data.get(k) for k in ['producer', 'country', 'model', 'specification']):
@@ -146,13 +159,21 @@ def process_lot_pdfs_universal(
         
         pdf_path = pdf_info['local_path']
         
-        # Extract data
-        pdf_data = extract_pdf_data(pdf_path, force_ocr=False)
-        
-        # Try OCR if needed
-        if enable_ocr and not any(pdf_data.get(k) for k in ['producer', 'country', 'model']):
-            print(f"[PDF_PROCESSOR] Retrying with OCR...")
-            pdf_data = extract_pdf_data(pdf_path, force_ocr=True)
+        # Check cache first
+        if pdf_path in _pdf_data_cache:
+            print(f"[PDF_PROCESSOR] Using cached data for {pdf_path}")
+            pdf_data = _pdf_data_cache[pdf_path]
+        else:
+            # Extract data
+            pdf_data = extract_pdf_data(pdf_path, force_ocr=False)
+            
+            # Try OCR if needed
+            if enable_ocr and not any(pdf_data.get(k) for k in ['producer', 'country', 'model']):
+                print(f"[PDF_PROCESSOR] Retrying with OCR...")
+                pdf_data = extract_pdf_data(pdf_path, force_ocr=True)
+            
+            # Cache the extracted data
+            _pdf_data_cache[pdf_path] = pdf_data
         
         if any(pdf_data.get(k) for k in ['producer', 'country', 'model', 'specification']):
             # Update worksheet specification area
