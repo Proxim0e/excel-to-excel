@@ -1,0 +1,25 @@
+resource_dir: "./resources"
+template_file: "./resources/sample_model.xlsx"
+
+# Если False — не изменяем листы, которые уже были в шаблоне (<= max_existing)
+append_to_existing: false
+
+# Порог для выделения (например, когда цена участника >= 130% от D8)
+percent_threshold: 1.3
+
+# Гибкие варианты названий колонок (совпадают с COLS из текущего кода)
+columns_map:
+  nr_lot: ["Nr. Lot", "Nr Lot"]
+  denumire: ["Denumirea Lotului\n04.09.2025", "Denumirea Lotului", "Denumire Lot NEW2"]
+  specificatie: ["Specificația Tehnică\n04.09.2025", "Specificația Тehnică", "Specificarea tehnică deplină NEW2"]
+  unitate_masura: ["Unitatea de măsură"]
+  cantitate_total: ["Cantitatea Totală"]
+  suma_alocata: ["Suma alocată"]
+
+# Куда писать значения в шаблоне (совпадает с TARGET_MAP)
+target_map:
+  denumire: ["B1"]          # "Lot nr. X {denumirea_lotului}"
+  specificatie: ["B11"]
+  unitate_masura: ["C9"]
+  cantitate_total: ["A1"]
+  suma_alocata: ["D8"]
