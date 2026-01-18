@@ -2,20 +2,22 @@ import re
 import copy
 from typing import Optional, List, Dict
 from pathlib import Path
+import logging
 
+logger = logging.getLogger(__name__)
 from openpyxl import load_workbook
 from openpyxl.styles import Font
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
 
-from ..config import (
+from src.config import (
     TEMPLATE_FILE, TARGET_MAP, COLS,
     APPEND_TO_EXISTING, PERCENT_THRESHOLD,
     NOT_HELD_FILL_DARK, NOT_HELD_FONT_WHITE
 )
-from ..models import LotData
-from ..utils.text_helpers import prepare_lot_title_for_b1, normalize_spaces #
-from .styles import (
+from src.models import LotData
+from src.utils.text_helpers import prepare_lot_title_for_b1, normalize_spaces
+from src.excel.styles import (
     NOT_HELD_FILL, NOT_HELD_FONT, NOT_HELD_ALIGNMENT,
     HIGH_PERCENT_FILL, HIGH_PERCENT_FONT, HIGH_PERCENT_ALIGNMENT,
     HEADER_FONT_BOLD
@@ -98,6 +100,20 @@ class ExcelManager:
     @staticmethod
     def copy_column_styles(ws, src_col_idx: int, dst_col_idx: int, max_row: int):
         """Копирует стили из одной колонки в другую"""
+        # 1. Копируем ШИРИНУ КОЛОНКИ (это свойство всей колонки)
+        src_letter = get_column_letter(src_col_idx)
+        dst_letter = get_column_letter(dst_col_idx)
+
+        try:
+            src_dim = ws.column_dimensions.get(src_letter)
+            # Если в шаблоне у Е задана ширина, ставим её и новой колонке
+            if src_dim and src_dim.width is not None:
+                ws.column_dimensions[dst_letter].width = src_dim.width
+                # Логируем: ширина УСТАНОВЛЕНА успешно
+                logger.debug(f"Ширина колонки скопирована: {src_letter} ({src_dim.width}) -> {dst_letter}")
+        except AttributeError as e:
+            logger.error(f"Критическая ошибка при чтении ширины колонки {src_letter}: {e}")
+
         for r in range(1, max_row + 1):
             src_cell = ws.cell(row=r, column=src_col_idx)
             dst_cell = ws.cell(row=r, column=dst_col_idx)
@@ -109,8 +125,15 @@ class ExcelManager:
                 dst_cell.number_format = src_cell.number_format
                 dst_cell.alignment = copy.copy(src_cell.alignment)
                 dst_cell.protection = copy.copy(src_cell.protection)
-            except AttributeError:
-                pass
+
+                # (Опционально) Раскомментируйте строку ниже, если хотите видеть лог для КАЖДОЙ строки.
+                # Внимание: при больших файлах это создаст очень много сообщений в консоли.
+                #logger.debug(f"Стили успешно скопированы для ячейки {dst_letter}{r}")
+
+            except AttributeError as e:
+                # ВАЖНО: Раньше здесь был 'pass', и ошибки игнорировались.
+                # Теперь мы записываем, в какой именно ячейке не скопировался стиль.
+                logger.debug(f"Не удалось скопировать стиль для строки {r} ({src_letter}{r}): {e}")
 
     def write_participants(self, lot_data: LotData):
         """
@@ -124,7 +147,7 @@ class ExcelManager:
                 return
             else:
                 # Если что-то пошло не так и листа нет, создадим его (для новых лотов)
-                ws = self.get_or_create_sheet(lot_data)
+                ws = self.get_or_create_sheet(lot_data.number)
                 if not ws: return
 
         participants = lot_data.participants
@@ -143,6 +166,8 @@ class ExcelManager:
             except AttributeError:
                 # Если вдруг свойство отсутствует, просто игнорируем
                 pass
+            logger.info(
+                f"[EXCEL] Лот {lot_data.number}: участников не найдено — вставляем 'Achiziţia nu a avut loc' в E11.")
             return
 
         # Записываем участников
@@ -198,6 +223,9 @@ class ExcelManager:
                 pass
 
             high_flags.append(is_high)
+            # ЛОГ: Записан участник
+            logger.info(
+                f"[EXCEL] Лот {lot_data.number}: записан участник в {col_letter} -> '{part.name}' / price={part.price_val} high={is_high}")
 
         # Если все high -> красная вкладка
         if high_flags and all(high_flags):
@@ -205,6 +233,9 @@ class ExcelManager:
                 ws.sheet_properties.tabColor = HIGH_PERCENT_FILL.start_color.rgb
             except AttributeError:
                 pass
+            # ЛОГ: Вкладка красная
+            logger.info(
+                f"[EXCEL] Лот {lot_data.number}: все участники >={int(PERCENT_THRESHOLD * 100)}% -> вкладка помечена красным")
 
     def save(self, output_path: str):
         """Сохраняет книгу по указанному пути"""
