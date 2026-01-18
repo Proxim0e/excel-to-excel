@@ -1,5 +1,7 @@
 import re
+import logging
 from typing import Optional
+logger = logging.getLogger(__name__)
 
 
 def strip_price_label(s: str) -> str:
@@ -23,47 +25,56 @@ def strip_price_label(s: str) -> str:
 
 def parse_price_to_number(price_str: Optional[str]) -> Optional[float]:
     """
-    Попытка извлечь число из строки цены.
-    Поддерживает форматы: "30 833,35 MDL", "30.833,35", "30833.35".
-    Возвращает float или None.
+    Парсер цен.
+    Сначала очищает текстовые метки, затем выделяет число.
     """
     if not price_str:
         return None
-    s = price_str.strip()
 
-    # Ищем кусок, похожий на число
+    # 1. Сначала убираем мусор-префиксы ("Preţul ofertei:" и т.д.)
+    # Это самый важный шаг, который мы пропустили ранее
+    s = strip_price_label(price_str)
+    logger.debug(f"Price parse: после очистки текста: '{s}'")
+
+    # 2. Ищем в строке кусок, похожий на число (цифры, пробелы, точки, запятые)
     m = re.search(r'[\d\s\.,]+', s)
     if not m:
+        logger.debug(f"Price parse: цифры не найдены в '{s}'")
         return None
 
     s = m.group(0).strip()
-    s = s.replace('\u00A0', ' ')  # неразрывный пробел в обычный
+    logger.debug(f"Price parse: числовой кусок: '{s}'")
 
-    # Логика определения точки и запятой
-    # Если есть и точка, и запятая: та, что правее — десятичный разделитель
+    # 3. Превращаем неразрывный пробел в обычный
+    s = s.replace('\u00A0', ' ')
+
+    # 4. Удаляем пробелы (разделитель тысяч)
+    s = s.replace(' ', '')
+
+    # 5. Определяем десятичный разделитель
     if ',' in s and '.' in s:
+        # Если оба есть: "1.234,56" или "1,234.56"
         if s.rfind(',') > s.rfind('.'):
-            s = s.replace('.', '')  # убираем тысячи-разделитель (точки)
-            s = s.replace(',', '.')  # меняем запятую на точку
+            s = s.replace('.', '').replace(',', '.')
         else:
-            s = s.replace(',', '')  # убираем тысячи-разделитель (запятые)
+            s = s.replace(',', '')
     elif ',' in s:
-        # Вероятно, европейский формат (30.000,00) -> запятая это десятичная, точка это тысячи
-        # Но для простоты парсинга убираем пробелы и заменяем запятую
-        s = s.replace(' ', '')
+        # Если только запятая (европейский стиль): меняем на точку
         s = s.replace(',', '.')
-    else:
-        s = s.replace(' ', '')
+    # Если только точка - оставляем как есть
 
-    # Удаляем всё, кроме цифр и точки
-    s = re.sub(r'[^\d\.]', '', s)
+    # Очищаем от оставшегося мусора
+    s = re.sub(r'[^\d.]', '', s)
 
     if not s:
         return None
 
     try:
-        return float(s)
-    except Exception:
+        val = float(s)
+        logger.debug(f"Price parse: ФИНАЛ: {val}")
+        return val
+    except ValueError as e:
+        logger.warning(f"Price parse: ошибка конвертации '{s}' -> {e}")
         return None
 
 
