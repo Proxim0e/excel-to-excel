@@ -1,9 +1,17 @@
 import concurrent.futures
 from datetime import datetime
 import logging
+from urllib3 import disable_warnings
+from urllib3.exceptions import InsecureRequestWarning # Иногда бывает полезно
+from src.utils.text_helpers import normalize_spaces, prepare_lot_title_for_b1
+
+# Отключаем лишние логи от библиотек requests и urllib3
+logging.getLogger("urllib3").setLevel(logging.WARNING)
+logging.getLogger("requests").setLevel(logging.WARNING)
 
 # Настройка логирования (вместо простых print)
 logging.basicConfig(level=logging.INFO, format='[%(levelname)s] %(message)s')
+#logging.basicConfig(level=logging.DEBUG,format='%(asctime)s [%(levelname)s] %(message)s')
 logger = logging.getLogger(__name__)
 
 from config import (
@@ -51,40 +59,71 @@ def main():
     # и заполнить их базовой мета-информацией.
 
     logger.info("Подготовка структуры Excel...")
+    created_count = 0
+    updated_count = 0
+    skipped_count = 0
+
     for lot_num, lot_info in parent_data.items():
         # Пытаемся получить или создать лист
         ws = excel_manager.get_or_create_sheet(lot_num)
-        # ВАЖНО: В текущей реализации get_or_create_sheet заполняет только B1 из LotData,
-        # который создается "на лету". Но реальная спецификация и точное название лежат в lot_info (из родителя).
 
-        # Если мы только что создали лист или режим APPEND_TO_EXISTING=True, нужно дополнить данные из родителя.
-        if ws and (excel_manager.max_existing < lot_num or APPEND_TO_EXISTING):
-            # Заполняем ячейки данными из родительского файла
-            # Для упрощения сделаем это прямо здесь, хотя в идеале это должно быть в Writer
+        # Если метод вернул None -> мы в режиме APPEND_TO_EXISTING=False и лист старый -> пропускаем
+        if not ws:
+            logger.debug(f"Лот {lot_num}: Пропущен (лист уже существовал, APPEND_TO_EXISTING=False)")
+            skipped_count += 1
+            continue
 
-            # Локальные переменные на английском!
-            # Denumire -> lot_title
-            lot_title = lot_info.get('denumire')
-            if lot_title:
-                ws["B1"] = f"Lot nr. {lot_num} {lot_title}".strip()
+        # Определяем статус обработки
+        is_new_lot = (excel_manager.max_existing < lot_num)
+        if is_new_lot:
+            created_count += 1
+            logger.info(f" Создан лист {lot_num}.")
+        else:
+            updated_count += 1
+            logger.info(f"Лот {lot_num}: ИСПОЛЬЗУЕТСЯ существующий лист.")
 
-            # Specificatie -> lot_specification
-            lot_specification = lot_info.get('specificatie')
-            if lot_specification:
-                current_b11 = ws["B11"].value
-                if current_b11 and lot_specification not in str(current_b11):
-                    ws["B11"] = f"{current_b11}\n{lot_specification}"
-                elif not current_b11:
-                    ws["B11"] = str(lot_specification)
+        # --- Заполнение данных ---
 
-            # Остальные поля (для порядка переведем и их)
-            unit_of_measure = lot_info.get('unitate_masura')
-            total_quantity = lot_info.get('cantitate_total')
-            allocated_sum = lot_info.get('suma_alocata')
+        lot_title = lot_info.get('denumire')
+        if lot_title:
+            ws["B1"] = f"Lot nr. {lot_num} {lot_title}".strip()
+            logger.debug(f"   -> Заголовок (B1): обновлен")
+        else:
+            logger.debug(f"   -> Заголовок (B1): данных нет")
 
-            if unit_of_measure: ws["C9"] = unit_of_measure
-            if total_quantity: ws["A1"] = total_quantity
-            if allocated_sum: ws["D8"] = allocated_sum
+        lot_specification = lot_info.get('specificatie')
+        if lot_specification:
+            current_b11 = ws["B11"].value
+            if current_b11 and lot_specification not in str(current_b11):
+                ws["B11"] = f"{current_b11}\n{lot_specification}"
+                logger.debug(f"   -> Спецификация (B11): добавлена")
+            elif not current_b11:
+                ws["B11"] = str(lot_specification)
+                logger.debug(f"   -> Спецификация (B11): записана")
+            else:
+                logger.debug(f"   -> Спецификация (B11): уже существует")
+        else:
+            logger.debug(f"   -> Спецификация (B11): данных нет")
+
+        # Остальные поля
+        unit_of_measure = lot_info.get('unitate_masura')
+        total_quantity = lot_info.get('cantitate_total')
+        allocated_sum = lot_info.get('suma_alocata')
+
+        if unit_of_measure:
+            ws["C9"] = unit_of_measure
+            logger.debug(f"   -> Ед. изм (C9): {unit_of_measure}")
+
+        if total_quantity:
+            ws["A1"] = total_quantity
+            logger.debug(f"   -> Кол-во (A1): {total_quantity}")
+
+        if allocated_sum:
+            ws["D8"] = allocated_sum
+            logger.debug(f"   -> Сумма (D8): {allocated_sum}")
+
+    logger.info(
+        f"Excel структура готова. Создано: {created_count}, Обновлено: {updated_count}, Пропущено: {skipped_count}")
 
     logger.info("Excel структура готова.")
 
@@ -110,9 +149,12 @@ def main():
                 lot_data = future.result()
                 results.append(lot_data)
                 if lot_data.error:
-                    logger.warning(f"Ошибка парсинга {url}: {lot_data.error}")
+                    logger.warning(f"Ошибка обработки {url}: {lot_data.error}")
                 else:
-                    logger.info(f"Спарсен лот {lot_data.number}: {len(lot_data.participants)} участн.")
+                    raw_title = lot_data.title if lot_data.title else ""
+                    display_title = normalize_spaces(prepare_lot_title_for_b1(raw_title))
+
+                    logger.info(f"Обработан лот {display_title}: {len(lot_data.participants)} участн.")
             except Exception as e:
                 logger.error(f"Критическая ошибка при обработке {url}: {e}")
 
