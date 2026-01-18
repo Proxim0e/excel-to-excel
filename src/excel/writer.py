@@ -7,6 +7,7 @@ from openpyxl import load_workbook
 from openpyxl.styles import Font
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
+
 from ..config import (
     TEMPLATE_FILE, TARGET_MAP, COLS,
     APPEND_TO_EXISTING, PERCENT_THRESHOLD,
@@ -46,19 +47,16 @@ class ExcelManager:
         # Вычисляем максимальный номер уже существующего лота
         self.max_existing: int = max(self.lot_sheets.keys()) if self.lot_sheets else 0
 
-    def get_or_create_sheet(self, lot_data: LotData) -> Optional[object]:
+    def get_or_create_sheet(self, lot_number: int) -> Optional[Worksheet]:
         """
         Возвращает объект листа для лота. Если листа нет — создает его.
         """
-        nr = lot_data.number
+        nr = lot_number
 
         # Если лист уже есть
         if nr in self.lot_sheets:
-            # Если режим "не трогать старое" и лот старый -> пропускаем обновление данных из родителя
             if not APPEND_TO_EXISTING and nr <= self.max_existing:
                 return None
-
-                # Если режим дополнения или лот новый (nr > max_existing)
             return self.lot_sheets[nr]
 
         # Создаем новый лист
@@ -67,8 +65,7 @@ class ExcelManager:
         new_sheet.title = new_title
         self.lot_sheets[nr] = new_sheet
 
-        # Заполняем базовые данные (B1, D8 и т.д.)
-        self._fill_lot_metadata(new_sheet, lot_data)
+        # Обратите внимание: Заполнение ячеек (B1, D8 и т.д.) мы перенесли в main.py
         return new_sheet
 
     @staticmethod
