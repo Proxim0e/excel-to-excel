@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-updated_processor_with_scrape.py
+legacy_processor.py
 
 Скрипт для синхронизации "лотов" из родительского Excel-файла в копии шаблона Excel,
 скрапинга страниц лотов с сайта и автоматического заполнения данных по участникам.
