@@ -6,7 +6,7 @@ import requests
 from bs4 import BeautifulSoup
 
 # Папка для ресурсов
-RESOURCE_DIR = './resources'
+RESOURCE_DIR = '../resources'
 
 # Фиксированное имя шаблонного файла
 TEMPLATE_FILE = os.path.join(RESOURCE_DIR, 'sample_model.xlsx')
