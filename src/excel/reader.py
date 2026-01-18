@@ -3,7 +3,7 @@ from typing import Dict, List, Optional, Any
 from pathlib import Path
 from openpyxl import load_workbook
 
-from ..config import RESOURCE_DIR, COLS
+from src.config import RESOURCE_DIR, COLS
 
 
 def find_parent_file() -> Path:
