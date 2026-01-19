@@ -58,13 +58,49 @@ class TenderScraper:
 
         return sorted(links)
 
+
+    @staticmethod
+    def extract_participant_docs(participant_node):
+        """
+        Извлекает ВСЕ ссылки на документы из блока участника.
+        Возвращает список кортежей: [('имя файла.pdf', 'http://...'), ...]
+        """
+        docs = []
+        # Ищем все строки с документами
+        rows = participant_node.select(".popup__tender__docs")
+
+        for row in rows:
+            # Берем ссылку (приоритет is-mobile, так как там прямой URL)
+            link_node = row.select_one("a.is-mobile") or row.select_one("a")
+            if not link_node:
+                continue
+
+            # Имя файла из текста ссылки
+            filename = link_node.get_text(strip=True)
+            # Сама ссылка
+            href = link_node.get("href")
+
+            if not href:
+                continue
+
+            # Если ссылка относительная (начинается с /), делаем полной
+            if href.startswith("/"):
+                from urllib.parse import urljoin
+                href = urljoin("https://achizitii.md", href)
+
+            docs.append((filename, href))
+
+        return docs
+
     def parse_lot_page(self, lot_url: str) -> LotData:
         """
         Парсит страницу конкретного лота и возвращает объект LotData.
         """
         logger.debug(f"Начинаю парсинг страницы: {lot_url}")
+
         soup = self.get_soup(lot_url)
         if not soup:
+            logger.error(f"Не удалось загрузить страницу: {lot_url}")
             return LotData(number=0, url=lot_url, error="load_failed")
 
         # 1. Извлекаем заголовок
@@ -72,23 +108,31 @@ class TenderScraper:
         for sel in ("h1", ".tender__page__title h1", ".tender__page__title"):
             el = soup.select_one(sel)
             if el and el.get_text(strip=True):
-                # ПРИМЕНЯЕМ НОРМАЛИЗАЦИЮ
                 title = normalize_spaces(el.get_text(strip=True))
                 break
+
         if not title:
             mt = soup.find("title")
-            # И ЗДЕСЬ тоже (для запасного варианта)
             title = normalize_spaces(mt.get_text(strip=True)) if mt else "(untitled)"
-        logger.debug(f"Найден заголовок: {title}")
-        # 2. Извлекаем номер лота из title
-        lot_number = 0
 
+        logger.debug(f"Найден заголовок: {title}")
+
+        # 2. Извлекаем номер лота
+        # Сначала пробуем из URL
+        lot_number = 0
+        parts = lot_url.rstrip('/').split('/')
+        if len(parts) > 1 and parts[-1].isdigit():
+            lot_number = int(parts[-1])
+
+        # Если в URL не нашлось, ищем в Title
         if lot_number == 0:
             import re
             m = re.search(r'Lot(?:ul)?\s*nr\.?\s*(\d+)', title, flags=re.I)
             if m:
                 lot_number = int(m.group(1))
+
         logger.debug(f"Определен номер лота: {lot_number}")
+
         # 3. Извлекаем участников
         participants: List[Participant] = []
         infos = soup.select(".participant-container-body-info")
@@ -109,13 +153,23 @@ class TenderScraper:
 
                 # Парсим цену в число
                 price_val = parse_price_to_number(price_str)
+
+                # Извлекаем все документы участника
+                all_docs = self.extract_participant_docs(info)
+
                 # Дебаг для каждого участника
-                logger.info(f"Участник: {name} | Цена (стр): {price_str} | Цена (число): {price_val}")
+                logger.debug(
+                    f"   Участник: {name} | Цена (стр): {price_str} | Цена (число): {price_val} | Документов: {len(all_docs)}")
 
                 if name or price_str:
-                    participants.append(Participant(name=name, price_str=price_str, price_val=price_val))
+                    participants.append(Participant(
+                        name=name,
+                        price_str=price_str,
+                        price_val=price_val,
+                        docs=all_docs  # <-- ПЕРЕДАЕМ ВСЕ ССЫЛКИ
+                    ))
         else:
-            # Fallback логика из legacy, если структура изменилась
+            # Fallback логика
             logger.warning("Основной блок участников не найден, включаю Fallback режим...")
             title_nodes = soup.select(".participant-container-body .participant-title, .participant-title")
             price_nodes = soup.select(".participant-container-body .participant-price, .participant-price")
@@ -124,7 +178,14 @@ class TenderScraper:
                     name = clean_company_name(t.get_text(strip=True))
                     price_str = p.get_text(strip=True)
                     price_val = parse_price_to_number(price_str)
-                    participants.append(Participant(name=name, price_str=price_str, price_val=price_val))
+
+                    # В Fallback режиме документов может и не быть, но попробуем найти
+                    # (Здесь info нет, так что ищем по DOM выше, если нужно, но для простоты оставим docs пустым)
+                    participants.append(Participant(name=name, price_str=price_str, price_val=price_val, docs=[]))
+            else:
+                logger.warning("Не удалось найти участников ни в одном из режимов.")
+
+        logger.debug(f"Всего извлечено участников: {len(participants)}")
 
         return LotData(
             number=lot_number,
