@@ -3,18 +3,9 @@ from datetime import datetime
 import logging
 from pathlib import Path
 from urllib3 import disable_warnings
-from urllib3.exceptions import InsecureRequestWarning # Иногда бывает полезно
+from urllib3.exceptions import InsecureRequestWarning  # Иногда бывает полезно
 from src.utils.text_helpers import normalize_spaces, prepare_lot_title_for_b1
 from src.utils.file_helpers import sanitize_filename
-# Отключаем лишние логи от библиотек requests и urllib3
-logging.getLogger("urllib3").setLevel(logging.WARNING)
-logging.getLogger("requests").setLevel(logging.WARNING)
-
-# Настройка логирования (вместо простых print)
-#logging.basicConfig(level=logging.INFO, format='[%(levelname)s] %(message)s')
-logging.basicConfig(level=logging.DEBUG,format='%(asctime)s [%(levelname)s] %(message)s')
-logger = logging.getLogger(__name__)
-
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 import requests
@@ -26,6 +17,15 @@ from config import (
 from scrapers.lot_parser import TenderScraper
 from excel.writer import ExcelManager
 from excel.reader import get_parent_data, get_tender_url_from_parent
+
+# Отключаем лишние логи от библиотек requests и urllib3
+logging.getLogger("urllib3").setLevel(logging.WARNING)
+logging.getLogger("requests").setLevel(logging.WARNING)
+
+# Настройка логирования (вместо простых print)
+logging.basicConfig(level=logging.INFO, format='[%(levelname)s] %(message)s', force=True)
+#logging.basicConfig(level=logging.DEBUG, format='%(asctime)s [%(levelname)s] %(message)s')
+logger = logging.getLogger(__name__)
 
 
 def main():
@@ -159,7 +159,7 @@ def main():
                     raw_title = lot_data.title if lot_data.title else ""
                     display_title = normalize_spaces(prepare_lot_title_for_b1(raw_title))
 
-                    logger.info(f"Обработан лот {display_title}: {len(lot_data.participants)} участн.")
+                    logger.info(f"Обработан   ===   {display_title}   === ---> [{len(lot_data.participants)}] участн.")
             except Exception as e:
                 logger.error(f"Критическая ошибка при обработке {url}: {e}")
 
@@ -170,6 +170,7 @@ def main():
     processed_count = 0
     for lot_data in results:
         if lot_data.number:
+            logger.info(f"Обработан лот {lot_data.number}: {len(lot_data.participants)} участн.")
             excel_manager.write_participants(lot_data)
             processed_count += 1
 
@@ -195,8 +196,12 @@ def main():
             m = re.search(r'/tender/(\d+)/', results[0].url)
             if m:
                 tender_id = m.group(1)
+    else:
+        print("Загрузки отключены в конфиге. Программа завершает работу.")
+        # Принудительный выход из скрипта
+        exit()
 
-    # Определяем ID тендера и добавляем таймстамп
+        # Определяем ID тендера и добавляем таймстамп
     tender_id = "unknown"
     if results:
         import re
@@ -238,7 +243,8 @@ def main():
                     f.write(r.content)
 
                 # Лог: Успех (INFO)
-                logger.info(f"[DOWNLOADED] {filename}")
+                #logger.info(f"[DOWNLOADED] === [{filename}] === ---> Lot: [{lot_data.number}] ---> Part: {part_name}]")
+                logger.info(f"[DOWNLOADED] ===   [{lot_name}]   === ---> Part: [{part_name}] ---> doc: [{filename}]")
                 logger.debug(f"   Path: {save_path}")
                 return "success"
             else:
@@ -340,6 +346,7 @@ def main():
                 fail_count += 1
 
     logger.info(f"Скачивание завершено. Успешно: {success_count}, Пропущено: {skip_count}, Ошибок: {fail_count}")
+
 
 if __name__ == "__main__":
     main()
