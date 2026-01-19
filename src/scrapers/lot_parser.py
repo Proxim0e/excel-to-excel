@@ -117,20 +117,14 @@ class TenderScraper:
 
         logger.debug(f"Найден заголовок: {title}")
 
-        # 2. Извлекаем номер лота
-        # Сначала пробуем из URL
+        # 2. Извлекаем номер лота из title
         lot_number = 0
-        parts = lot_url.rstrip('/').split('/')
-        if len(parts) > 1 and parts[-1].isdigit():
-            lot_number = int(parts[-1])
 
-        # Если в URL не нашлось, ищем в Title
         if lot_number == 0:
             import re
             m = re.search(r'Lot(?:ul)?\s*nr\.?\s*(\d+)', title, flags=re.I)
             if m:
                 lot_number = int(m.group(1))
-
         logger.debug(f"Определен номер лота: {lot_number}")
 
         # 3. Извлекаем участников
