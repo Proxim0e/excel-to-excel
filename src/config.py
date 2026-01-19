@@ -24,7 +24,7 @@ HEADERS: Dict[str, str] = {
     "User-Agent": "Mozilla/5.0 (compatible; scraper/1.0; +https://example.com/bot)"
 }
 
-MAX_WORKERS: int = 16
+MAX_WORKERS: int = 16 # max 50
 
 # ---------------------------------------------------------------------------
 # Логика и Пороги
@@ -74,3 +74,6 @@ ENABLE_DOWNLOADS: bool = True
 # Если оставить список пустым [] - будут качаться ВСЕ файлы (как мы и планировали).
 # Если добавить [".pdf"] - будут качаться только PDF.
 ALLOWED_EXTENSIONS = [".pdf"]
+
+# Количество попыток скачивания одного файла
+DOWNLOAD_RETRIES: int = 10

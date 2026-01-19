@@ -9,10 +9,13 @@ from src.utils.file_helpers import sanitize_filename
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 import requests
+from pathlib import Path
+import time # Для паузы между попытками
+import traceback # Для вывода ошибки
 import os
 from config import (
     RESOURCE_DIR, TEMPLATE_FILE,
-    MAX_WORKERS, DEFAULT_TENDER_URL, APPEND_TO_EXISTING, ENABLE_DOWNLOADS, DOWNLOAD_DIR, ALLOWED_EXTENSIONS, HEADERS
+    MAX_WORKERS, DEFAULT_TENDER_URL, APPEND_TO_EXISTING, ENABLE_DOWNLOADS, DOWNLOAD_DIR, ALLOWED_EXTENSIONS, HEADERS, DOWNLOAD_RETRIES
 )
 from scrapers.lot_parser import TenderScraper
 from excel.writer import ExcelManager
@@ -23,8 +26,9 @@ logging.getLogger("urllib3").setLevel(logging.WARNING)
 logging.getLogger("requests").setLevel(logging.WARNING)
 
 # Настройка логирования (вместо простых print)
-logging.basicConfig(level=logging.INFO, format='[%(levelname)s] %(message)s', force=True)
+#ogging.basicConfig(level=logging.INFO, format='[%(levelname)s] %(message)s', force=True)
 #logging.basicConfig(level=logging.DEBUG, format='%(asctime)s [%(levelname)s] %(message)s')
+logging.basicConfig(level=logging.DEBUG, format='[%(levelname)s] %(message)s', force=True)
 logger = logging.getLogger(__name__)
 
 
@@ -223,38 +227,65 @@ def main():
     def download_worker(task_data):
         """
         Функция, выполняющаяся в отдельном потоке.
-        Скачивает один файл и пишет логи.
+        С поддержкой повторных попыток (количество задается в config).
         """
-        url, save_path, lot_name, part_name, filename = task_data
+        url, file_path, lot_name, part_name, filename = task_data
 
-        # Лог: Проверка существования (DEBUG)
-        if save_path.exists():
-            logger.debug(f"[SKIP] File exists: {filename} (Lot: {lot_name}, Part: {part_name})")
+        from pathlib import Path
+        import time  # Для паузы между попытками
+        import traceback  # Для вывода ошибки
+
+        file_path = Path(file_path)
+
+        if file_path.exists():
+            logger.debug(f"[SKIP] File exists: {filename}")
             return "skipped"
 
-        try:
-            # Лог: Начало скачивания (DEBUG)
-            logger.debug(f"[DL] Requesting: {url}")
-            r = requests.get(url, headers=HEADERS, timeout=20)
+        # Цикл попыток (берем количество из config)
+        for attempt in range(DOWNLOAD_RETRIES):
+            try:
+                logger.debug(f"[DL] Attempt {attempt + 1}: Requesting {url}")
+                r = requests.get(url, headers=HEADERS, timeout=30)
 
-            if r.status_code == 200:
-                # Создаем файл и пишем туда данные
-                with open(save_path, 'wb') as f:
-                    f.write(r.content)
+                # --- Блок обработки статусов HTTP ---
+                if r.status_code == 200:
+                    with open(file_path, 'wb') as f:
+                        f.write(r.content)
 
-                # Лог: Успех (INFO)
-                #logger.info(f"[DOWNLOADED] === [{filename}] === ---> Lot: [{lot_data.number}] ---> Part: {part_name}]")
-                logger.info(f"[DOWNLOADED] ===   [{lot_name}]   === ---> Part: [{part_name}] ---> doc: [{filename}]")
-                logger.debug(f"   Path: {save_path}")
-                return "success"
-            else:
-                # Лог: Ошибка статуса (DEBUG)
-                logger.debug(f"[FAIL] Status {r.status_code} for {filename}")
-                return "fail"
-        except Exception as e:
-            # Лог: Ошибка сети (DEBUG)
-            logger.debug(f"[ERROR] {filename} -> {e}")
-            return "error"
+                    # Лог успеха (INFO) с красивым форматом, как ты хотел
+                    logger.info(f"[DOWNLOADED] OK === [{lot_name}] === Part: [{part_name}] === Doc: [{filename}]")
+                    logger.debug(f"  OK -> Path: {file_path}")
+                    return "success"
+
+                elif r.status_code in [404, 403]:
+                    # Фатальные ошибки клиента. Нет смысла повторять.
+                    logger.error(f"[FATAL] Status {r.status_code} (File Not Found/Access Denied) for {filename}")
+                    return "fail"
+
+                elif r.status_code in [503, 500, 502, 504]:
+                    # Ошибки сервера. Нужно повторить!
+                    # Выбрасываем исключение, чтобы перейти к логике retry (sleep и следующий цикл)
+                    raise Exception(f"Server Error: {r.status_code}")
+
+                else:
+                    # Любой другой статус (например, 406, 410 и т.д.)
+                    logger.warning(f"[UNKNOWN] Status {r.status_code} for {filename}")
+                    return "fail"
+
+            except Exception as e:
+                # Сюда попадают: Ошибки сети + наши рукотворные Exception от 503/500
+                logger.warning(f"[ERROR] {filename} (Attempt {attempt + 1}): {e}")
+
+                # Если это была последняя попытка -> выходим с ошибкой
+                if attempt == DOWNLOAD_RETRIES - 1:
+                    full_error = traceback.format_exc()
+                    logger.error(f"[FATAL] {filename} -> {full_error}")
+                    return "error"
+
+                # Если попытка не последняя -> ждем и повторяем
+                time.sleep(1)
+
+        return "fail"
 
     # -----------------------------------------------------
     # Сбор списка задач (планирование путей)
@@ -304,18 +335,18 @@ def main():
                     continue
 
             # 3. Цикл по ФАЙЛАМ (самый глубокий)
-            for filename, url in part.docs:
+            for doc_filename, doc_url in part.docs:
 
                 # !!! ТУТ ДОЛЖНА БЫТЬ ПРОВЕРКА РАСШИРЕНИЯ !!!
                 # Проверяем расширение (если список не пустой в конфиге)
                 if ALLOWED_EXTENSIONS:
                     # Приводим к нижнему регистру и проверяем
-                    is_allowed = any(filename.lower().endswith(ext) for ext in ALLOWED_EXTENSIONS)
+                    is_allowed = any(doc_filename.lower().endswith(ext) for ext in ALLOWED_EXTENSIONS)
                     if not is_allowed:
-                        logger.debug(f"   [SKIP] Тип файла не разрешен: {filename}")
+                        logger.debug(f"   [SKIP] Тип файла не разрешен: {doc_filename}")
                         continue  # Переходим к следующему файлу
 
-                clean_filename = sanitize_filename(filename).strip()
+                clean_filename = sanitize_filename(doc_filename).strip()
                 if not clean_filename:
                     continue
                 # Оператор /
@@ -323,7 +354,7 @@ def main():
 
                 # Добавляем задачу в очередь
                 # Передаем lot_name и part_name только для логов
-                tasks.append((url, save_path, lot_data.title, part.name, filename))
+                tasks.append((url, save_path, lot_data.title, part.name, doc_filename))
 
     logger.info(f"Найдено файлов для скачивания: {len(tasks)}. Запуск потоков (Workers: {MAX_WORKERS})...")
 
