@@ -24,10 +24,13 @@ HEADERS: Dict[str, str] = {
     "User-Agent": "Mozilla/5.0 (compatible; scraper/1.0; +https://example.com/bot)"
 }
 
-MAX_WORKERS: int = 16
+
 
 # ---------------------------------------------------------------------------
 # Логика и Пороги
+
+DOWNLOAD_RETRIES = 25 # попытки парсить и грузить
+MAX_WORKERS: int = 16 # потоки
 # ---------------------------------------------------------------------------
 # Поведение при существующих листах
 APPEND_TO_EXISTING: bool = False
