@@ -1,5 +1,4 @@
 import concurrent.futures
-from datetime import datetime
 import logging
 from pathlib import Path
 from urllib3 import disable_warnings
@@ -8,6 +7,7 @@ from src.utils.text_helpers import normalize_spaces, prepare_lot_title_for_b1
 from src.utils.file_helpers import sanitize_filename
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
+from src.utils.http_client import smart_request
 import requests
 import os
 from config import (
@@ -222,39 +222,45 @@ def main():
     # Определяем функцию-воркера для скачивания одного файла
     def download_worker(task_data):
         """
-        Функция, выполняющаяся в отдельном потоке.
-        Скачивает один файл и пишет логи.
+        Воркер для скачивания. Использует smart_request + requests.get (стабильно).
         """
-        url, save_path, lot_name, part_name, filename = task_data
+        url, file_path, lot_name, part_name, file_name = task_data
 
-        # Лог: Проверка существования (DEBUG)
-        if save_path.exists():
-            logger.debug(f"[SKIP] File exists: {filename} (Lot: {lot_name}, Part: {part_name})")
+        from pathlib import Path
+        import traceback
+
+        file_path = Path(file_path)
+
+        if file_path.exists():
+            logger.debug(f"[SKIP] File exists: {file_name}")
             return "skipped"
 
         try:
-            # Лог: Начало скачивания (DEBUG)
-            logger.debug(f"[DL] Requesting: {url}")
-            r = requests.get(url, headers=HEADERS, timeout=20)
+            # --- ВЫЗОВ УМНОГО ЗАПРОСА ---
+            # Используем requests.get (прямое соединение) для стабильности (без session)
+            response = smart_request(
+                requests.get,
+                url,
+                headers=HEADERS,
+                timeout=60,
+                action_name=f"Download {file_name}"
+            )
 
-            if r.status_code == 200:
-                # Создаем файл и пишем туда данные
-                with open(save_path, 'wb') as f:
-                    f.write(r.content)
+            # Записываем файл (r.content - проверенный способ)
+            with open(file_path, 'wb') as f:
+                f.write(response.content)
 
-                # Лог: Успех (INFO)
-                #logger.info(f"[DOWNLOADED] === [{filename}] === ---> Lot: [{lot_data.number}] ---> Part: {part_name}]")
-                logger.info(f"[DOWNLOADED] ===   [{lot_name}]   === ---> Part: [{part_name}] ---> doc: [{filename}]")
-                logger.debug(f"   Path: {save_path}")
-                return "success"
-            else:
-                # Лог: Ошибка статуса (DEBUG)
-                logger.debug(f"[FAIL] Status {r.status_code} for {filename}")
-                return "fail"
-        except Exception as e:
-            # Лог: Ошибка сети (DEBUG)
-            logger.debug(f"[ERROR] {filename} -> {e}")
+            # Твой лог успеха
+            logger.info(f"[DOWNLOADED] OK === [{lot_name}] === Part: [{part_name}] === Doc: [{file_name}]")
+            return "success"
+
+        except (requests.exceptions.HTTPError, OSError) as e:
+            # HTTPError: smart_request не смог скачать (404/403 или ретраи кончились)
+            # OSError: Ошибка записи на диск
+            logger.error(f"[FAIL] {file_name}: {e}")
             return "error"
+
+        # Важно: УБРАЛИ "except Exception", чтобы критические ошибки вылетали наружу в main.py
 
     # -----------------------------------------------------
     # Сбор списка задач (планирование путей)
