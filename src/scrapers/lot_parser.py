@@ -1,6 +1,6 @@
 from urllib.parse import urljoin
 from typing import List, Optional, Dict
-
+from src.utils.http_client import smart_request
 import requests
 from bs4 import BeautifulSoup
 from src.utils.text_helpers import clean_company_name, parse_price_to_number, normalize_spaces
@@ -94,96 +94,83 @@ class TenderScraper:
 
     def parse_lot_page(self, lot_url: str) -> LotData:
         """
-        Парсит страницу конкретного лота и возвращает объект LotData.
+        Парсит страницу лота. Использует smart_request для ретраев.
         """
-        logger.debug(f"Начинаю парсинг страницы: {lot_url}")
+        try:
+            # --- ВЫЗОВ УМНОГО ЗАПРОСА ---
+            response = smart_request(
+                self.session.get,
+                lot_url,
+                timeout=30,
+                action_name="Scrape"
+            )
 
-        soup = self.get_soup(lot_url)
-        if not soup:
-            logger.error(f"Не удалось загрузить страницу: {lot_url}")
-            return LotData(number=0, url=lot_url, error="load_failed")
+            # Если успех — парсим HTML
+            soup = BeautifulSoup(response.text, "html.parser")
 
-        # 1. Извлекаем заголовок
-        title: Optional[str] = None
-        for sel in ("h1", ".tender__page__title h1", ".tender__page__title"):
-            el = soup.select_one(sel)
-            if el and el.get_text(strip=True):
-                title = normalize_spaces(el.get_text(strip=True))
-                break
+            # 1. Извлекаем заголовок
+            title: Optional[str] = None
+            for sel in ("h1", ".tender__page__title h1", ".tender__page__title"):
+                el = soup.select_one(sel)
+                if el and el.get_text(strip=True):
+                    title = normalize_spaces(el.get_text(strip=True))
+                    break
 
-        if not title:
-            mt = soup.find("title")
-            title = normalize_spaces(mt.get_text(strip=True)) if mt else "(untitled)"
+            if not title:
+                mt = soup.find("title")
+                title = normalize_spaces(mt.get_text(strip=True)) if mt else "(untitled)"
 
-        logger.debug(f"Найден заголовок: {title}")
+            # 2. Извлекаем номер лота из title
+            lot_number = 0
 
-        # 2. Извлекаем номер лота из title
-        lot_number = 0
+            if lot_number == 0:
+                import re
+                m = re.search(r'Lot(?:ul)?\s*nr\.?\s*(\d+)', title, flags=re.I)
+                if m:
+                    lot_number = int(m.group(1))
+            logger.debug(f"Определен номер лота: {lot_number}")
 
-        if lot_number == 0:
-            import re
-            m = re.search(r'Lot(?:ul)?\s*nr\.?\s*(\d+)', title, flags=re.I)
-            if m:
-                lot_number = int(m.group(1))
-        logger.debug(f"Определен номер лота: {lot_number}")
+            # 3. Извлекаем участников
+            participants: List[Participant] = []
+            infos = soup.select(".participant-container-body-info")
 
-        # 3. Извлекаем участников
-        participants: List[Participant] = []
-        infos = soup.select(".participant-container-body-info")
+            if infos:
+                for info in infos:
+                    name = ""
+                    nnode = info.select_one(
+                        ".participant-container-body-item.participant-title, .participant-title, .participant-title-div")
+                    if nnode:
+                        name = clean_company_name(nnode.get_text(separator=" ", strip=True))
 
-        if infos:
-            logger.debug("Найден основной блок участников (.participant-container-body-info)")
-            for info in infos:
-                name = ""
-                nnode = info.select_one(
-                    ".participant-container-body-item.participant-title, .participant-title, .participant-title-div")
-                if nnode:
-                    name = clean_company_name(nnode.get_text(separator=" ", strip=True))
+                    price_str = ""
+                    pnode = info.select_one(".participant-container-body .participant-price, .participant-price")
+                    if pnode:
+                        price_str = pnode.get_text(separator=" ", strip=True)
 
-                price_str = ""
-                pnode = info.select_one(".participant-container-body .participant-price, .participant-price")
-                if pnode:
-                    price_str = pnode.get_text(separator=" ", strip=True)
-
-                # Парсим цену в число
-                price_val = parse_price_to_number(price_str)
-
-                # Извлекаем все документы участника
-                all_docs = self.extract_participant_docs(info)
-
-                # Дебаг для каждого участника
-                logger.debug(
-                    f"   Участник: {name} | Цена (стр): {price_str} | Цена (число): {price_val} | Документов: {len(all_docs)}")
-
-                if name or price_str:
-                    participants.append(Participant(
-                        name=name,
-                        price_str=price_str,
-                        price_val=price_val,
-                        docs=all_docs  # <-- ПЕРЕДАЕМ ВСЕ ССЫЛКИ
-                    ))
-        else:
-            # Fallback логика
-            logger.warning("Основной блок участников не найден, включаю Fallback режим...")
-            title_nodes = soup.select(".participant-container-body .participant-title, .participant-title")
-            price_nodes = soup.select(".participant-container-body .participant-price, .participant-price")
-            if title_nodes and price_nodes and len(title_nodes) == len(price_nodes):
-                for t, p in zip(title_nodes, price_nodes):
-                    name = clean_company_name(t.get_text(strip=True))
-                    price_str = p.get_text(strip=True)
                     price_val = parse_price_to_number(price_str)
+                    all_docs = self.extract_participant_docs(info)
 
-                    # В Fallback режиме документов может и не быть, но попробуем найти
-                    # (Здесь info нет, так что ищем по DOM выше, если нужно, но для простоты оставим docs пустым)
-                    participants.append(Participant(name=name, price_str=price_str, price_val=price_val, docs=[]))
-            else:
-                logger.warning("Не удалось найти участников ни в одном из режимов.")
+                    if name or price_str:
+                        participants.append(Participant(
+                            name=name,
+                            price_str=price_str,
+                            price_val=price_val,
+                            docs=all_docs
+                        ))
 
-        logger.debug(f"Всего извлечено участников: {len(participants)}")
+            return LotData(
+                number=lot_number,
+                url=lot_url,
+                title=title,
+                participants=participants
+            )
 
-        return LotData(
-            number=lot_number,
-            url=lot_url,
-            title=title,
-            participants=participants
-        )
+        except requests.exceptions.HTTPError as e:
+            # smart_request выдал эту ошибку (404 или ретраи кончились)
+            logger.warning(f"Ошибка запроса для {lot_url}: {e}")
+            return LotData(number=0, url=lot_url, error=str(e))
+
+        except Exception as e:
+            # Любые другие ошибки парсинга
+            logger.error(f"Критическая ошибка парсинга {lot_url}: {e}")
+            return LotData(number=0, url=lot_url, error=str(e))
