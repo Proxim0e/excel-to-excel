@@ -13,6 +13,7 @@ from pathlib import Path
 import time # Для паузы между попытками
 import traceback # Для вывода ошибки
 import os
+from src.utils.http_client import smart_request
 from config import (
     RESOURCE_DIR, TEMPLATE_FILE,
     MAX_WORKERS, DEFAULT_TENDER_URL, APPEND_TO_EXISTING, ENABLE_DOWNLOADS, DOWNLOAD_DIR, ALLOWED_EXTENSIONS, HEADERS, DOWNLOAD_RETRIES
@@ -223,17 +224,16 @@ def main():
     # Создаем базовую папку тендера
     tender_folder.mkdir(parents=True, exist_ok=True)
 
-    # Определяем функцию-воркера для скачивания одного файла
     def download_worker(task_data):
         """
-        Функция, выполняющаяся в отдельном потоке.
-        С поддержкой повторных попыток (количество задается в config).
+        Воркер для скачивания.
+        Использует stream=True для борьбы с обрезами файлов на 102Кб.
         """
         url, file_path, lot_name, part_name, filename = task_data
 
         from pathlib import Path
-        import time  # Для паузы между попытками
-        import traceback  # Для вывода ошибки
+        import traceback
+        import requests.exceptions  # Для ловли ошибок протокола
 
         file_path = Path(file_path)
 
@@ -241,52 +241,62 @@ def main():
             logger.debug(f"[SKIP] File exists: {filename}")
             return "skipped"
 
-        # Цикл попыток (берем количество из config)
-        for attempt in range(DOWNLOAD_RETRIES):
+        # Внешний цикл: пытаемся скачать файл (коннект + контент)
+        for dl_attempt in range(DOWNLOAD_RETRIES):
             try:
-                logger.debug(f"[DL] Attempt {attempt + 1}: Requesting {url}")
-                r = requests.get(url, headers=HEADERS, timeout=30)
+                # Используем smart_request для установки коннекта (проверка 503/404/Timeout)
+                # stream=True - самый важный параметр здесь
+                response = smart_request(
+                    requests.get,
+                    url,
+                    headers=HEADERS,  # Явно передаем хедеры
+                    timeout=60,
+                    action_name=f"Download {filename}",
+                    stream=True
+                )
 
-                # --- Блок обработки статусов HTTP ---
-                if r.status_code == 200:
+                # Записываем файл кусками
+                try:
                     with open(file_path, 'wb') as f:
-                        f.write(r.content)
+                        for chunk in response.iter_content(chunk_size=8192):
+                            if chunk:
+                                f.write(chunk)
 
-                    # Лог успеха (INFO) с красивым форматом, как ты хотел
+                    # Если цикл прошел без ошибок - файл скачался полностью
                     logger.info(f"[DOWNLOADED] OK === [{lot_name}] === Part: [{part_name}] === Doc: [{filename}]")
-                    logger.debug(f"  OK -> Path: {file_path}")
                     return "success"
 
-                elif r.status_code in [404, 403]:
-                    # Фатальные ошибки клиента. Нет смысла повторять.
-                    logger.error(f"[FATAL] Status {r.status_code} (File Not Found/Access Denied) for {filename}")
-                    return "fail"
+                except (requests.exceptions.ChunkedEncodingError, requests.exceptions.ConnectionError,
+                        requests.exceptions.ProtocolError) as e:
+                    # Ошибка именно во время чтения потока (обрыв на 102Кб)
+                    logger.warning(f"[STREAM ERROR] {filename} (Attempt {dl_attempt + 1}): {e}")
 
-                elif r.status_code in [503, 500, 502, 504]:
-                    # Ошибки сервера. Нужно повторить!
-                    # Выбрасываем исключение, чтобы перейти к логике retry (sleep и следующий цикл)
-                    raise Exception(f"Server Error: {r.status_code}")
+                    # Удаляем испорченный файл
+                    if file_path.exists():
+                        file_path.unlink()
 
-                else:
-                    # Любой другой статус (например, 406, 410 и т.д.)
-                    logger.warning(f"[UNKNOWN] Status {r.status_code} for {filename}")
-                    return "fail"
+                    # Если это была последняя попытка
+                    if dl_attempt == DOWNLOAD_RETRIES - 1:
+                        logger.error(f"[FATAL] Stream retries exhausted for {filename}")
+                        return "error"
+
+                    # Если не последняя -> повторяем (сразу следующую итерацию)
+                    time.sleep(1)
+                    continue
+
+            except (requests.exceptions.HTTPError, OSError) as e:
+                # Ошибки сети (smart_request не смог скачать 404 или кончились попытки коннекта)
+                # Ошибки диска (OSError)
+                logger.error(f"[FAIL] {filename}: {e}")
+                return "error"
 
             except Exception as e:
-                # Сюда попадают: Ошибки сети + наши рукотворные Exception от 503/500
-                logger.warning(f"[ERROR] {filename} (Attempt {attempt + 1}): {e}")
-
-                # Если это была последняя попытка -> выходим с ошибкой
-                if attempt == DOWNLOAD_RETRIES - 1:
-                    full_error = traceback.format_exc()
-                    logger.error(f"[FATAL] {filename} -> {full_error}")
-                    return "error"
-
-                # Если попытка не последняя -> ждем и повторяем
-                time.sleep(1)
+                # Любые другие ошибки
+                full_error = traceback.format_exc()
+                logger.error(f"[FATAL] {filename} -> {full_error}")
+                return "error"
 
         return "fail"
-
     # -----------------------------------------------------
     # Сбор списка задач (планирование путей)
     # -----------------------------------------------------

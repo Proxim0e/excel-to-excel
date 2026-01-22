@@ -76,4 +76,4 @@ ENABLE_DOWNLOADS: bool = True
 ALLOWED_EXTENSIONS = [".pdf"]
 
 # Количество попыток скачивания одного файла
-DOWNLOAD_RETRIES: int = 10
+DOWNLOAD_RETRIES: int = 50
