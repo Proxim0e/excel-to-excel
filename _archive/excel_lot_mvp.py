@@ -21,7 +21,7 @@ from datetime import datetime
 from openpyxl import load_workbook
 
 # Папка для ресурсов
-RESOURCE_DIR = './resources'
+RESOURCE_DIR = '../resources'
 
 # Фиксированное имя шаблонного файла
 TEMPLATE_FILE = os.path.join(RESOURCE_DIR, 'sample_model.xlsx')
