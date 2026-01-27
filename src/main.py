@@ -10,13 +10,13 @@ from datetime import datetime
 from src.utils.http_client import smart_request
 import requests
 import os
-from config import (
+from .config import(
     RESOURCE_DIR, TEMPLATE_FILE,
     MAX_WORKERS, DEFAULT_TENDER_URL, APPEND_TO_EXISTING, ENABLE_DOWNLOADS, DOWNLOAD_DIR, ALLOWED_EXTENSIONS, HEADERS
 )
-from scrapers.lot_parser import TenderScraper
-from excel.writer import ExcelManager
-from excel.reader import get_parent_data, get_tender_url_from_parent
+from .scrapers.lot_parser import TenderScraper
+from .excel.writer import ExcelManager
+from .excel.reader import get_parent_data, get_tender_url_from_parent
 
 # Отключаем лишние логи от библиотек requests и urllib3
 logging.getLogger("urllib3").setLevel(logging.WARNING)
