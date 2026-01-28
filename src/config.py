@@ -34,7 +34,7 @@ MAX_WORKERS: int = 50 # потоки
 
 PDF_FUZZY_THRESHOLD = 95
 PDF_MAX_PAGES_FOR_CONTENT_CHECK = 100
-PDF_MAX_WORKERS_FOR_CONTENT_CHECK = 2
+PDF_MAX_WORKERS_FOR_CONTENT_CHECK = 4
 PDF_SPEC_ROW = 11
 PDF_DATA_ROW = 3      # строка для Producator/Țara/Model
 
@@ -95,6 +95,14 @@ PDF_KEYWORDS_FILENAME = [
     "specificatia tehnica", "anexa 22 specificatii tehnice",
     "anexanr22"
 ]
+
+COL_SYNONYMS = {
+        "model": ["model", "denumire", "nume", "pozitie"],
+        "country": ["țara", "tara", "orig", "provenienta", "origine"],
+        "manufacturer": ["producător", "producator", "firmă", "fabric", "furnizor"],
+        "spec": ["specificație", "propusă", "propusa", "descriere", "observatii", "caracteristici"],
+        "lot": ["nr", "lot", "poz"]
+    }
 
 PDF_KEYWORDS_CONTENT = [
     "Specificarea tehnică deplină propusă de către ofertant", "Anexa nr. 22", "Specificaţii tehnice",

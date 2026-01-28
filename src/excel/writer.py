@@ -237,6 +237,83 @@ class ExcelManager:
             logger.info(
                 f"[EXCEL] Лот {lot_data.number}: все участники >={int(PERCENT_THRESHOLD * 100)}% -> вкладка помечена красным")
 
+    def write_pdf_data_to_participant(
+            self,
+            lot_number: int,
+            participant_name: str,
+            model: Optional[str] = None,
+            country: Optional[str] = None,
+            manufacturer: Optional[str] = None,
+            specification_text: Optional[str] = None
+    ) -> None:
+        """
+        Записывает данные из Приложения 22 в колонку участника на листе лота.
+
+        Логика:
+        - Находит лист 'lot {lot_number}'.
+        - Ищет колонку по строке 2: 'Ofertant: {participant_name}' (частичный матч, игнорируя регистр).
+        - В найденной колонке:
+            row 3 → многострочный текст:
+                    Producator: {manufacturer}
+                    Țara: {country}
+                    Model: {model}
+              (каждое поле с новой строки, пустые пропускаются)
+            row 11 → {specification_text},a22 (дополняет, если уже есть текст)
+        """
+        ws = self.lot_sheets.get(lot_number)
+        if not ws:
+            logger.warning(
+                f"[PDF] Лист для лота {lot_number} не найден — пропускаем запись данных участника {participant_name}")
+            return
+
+        participant_lower = participant_name.strip().lower()
+        target_col = None
+
+        # Ищем колонку участника (начиная с E=5)
+        for col_idx in range(5, ws.max_column + 1):
+            cell_value = ws.cell(row=2, column=col_idx).value
+            if cell_value and isinstance(cell_value, str):
+                if "ofertant" in cell_value.lower() and participant_lower in cell_value.lower():
+                    target_col = col_idx
+                    logger.debug(
+                        f"[PDF] Найден участник {participant_name} в колонке {get_column_letter(col_idx)} (лот {lot_number})")
+                    break
+
+        if not target_col:
+            logger.warning(f"[PDF] Участник '{participant_name}' не найден на листе лота {lot_number}")
+            return
+
+        col_letter = get_column_letter(target_col)
+
+        # Собираем многострочный блок Producator / Țara / Model в одну ячейку (row 3)
+        lines = []
+        if manufacturer:
+            lines.append(f"Producator: {manufacturer.strip()}")
+        if country:
+            lines.append(f"Țara: {country.strip()}")
+        if model:
+            lines.append(f"Model: {model.strip()}")
+
+        if lines:
+            ws[f"{col_letter}3"] = "\n".join(lines)
+            logger.debug(f"[PDF] Записан блок Producator/Țara/Model в {col_letter}3")
+
+        # Спецификация в row 11 с маркером ",a22"
+        if specification_text:
+            spec_text = specification_text.strip()
+            if spec_text:
+                spec_with_marker = f"{spec_text},a22"
+                current = ws[f"{col_letter}11"].value or ""
+                if current:
+                    # Дополняем через новую строку, чтобы не затереть существующее
+                    ws[f"{col_letter}11"] = f"{current}\n{spec_with_marker}"
+                else:
+                    ws[f"{col_letter}11"] = spec_with_marker
+                logger.debug(f"[PDF] Записана спецификация в {col_letter}11")
+
+        logger.info(
+            f"[PDF] Успешно обновлены данные для участника '{participant_name}' в колонке {col_letter} (лот {lot_number})")
+
     def save(self, output_path: str):
         """Сохраняет книгу по указанному пути"""
         self.wb.save(output_path)

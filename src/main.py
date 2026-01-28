@@ -1,18 +1,18 @@
 import concurrent.futures
 import logging
-from pathlib import Path
-from urllib3 import disable_warnings
-from urllib3.exceptions import InsecureRequestWarning  # Иногда бывает полезно
+from src.utils.pdf.pdf_processor import process_all_participants
+from loguru import logger as pdf_logger  # отдельный логгер, если хочешь
 from src.utils.text_helpers import normalize_spaces, prepare_lot_title_for_b1
 from src.utils.file_helpers import sanitize_filename
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from src.utils.http_client import smart_request
 import requests
-import os
-from .config import(
+
+from .config import (
     RESOURCE_DIR, TEMPLATE_FILE,
-    MAX_WORKERS, DEFAULT_TENDER_URL, APPEND_TO_EXISTING, ENABLE_DOWNLOADS, DOWNLOAD_DIR, ALLOWED_EXTENSIONS, HEADERS
+    MAX_WORKERS, DEFAULT_TENDER_URL, APPEND_TO_EXISTING, ENABLE_DOWNLOADS, DOWNLOAD_DIR, ALLOWED_EXTENSIONS, HEADERS,
+    USE_LATEST_DOWNLOAD_FOLDER, ENABLE_PDF_PROCESSING
 )
 from .scrapers.lot_parser import TenderScraper
 from .excel.writer import ExcelManager
@@ -188,171 +188,202 @@ def main():
     # -----------------------------------------------------
     # 7. Скачивание всех документов (PDF) - Параллельно
     # -----------------------------------------------------
-    if ENABLE_DOWNLOADS:  # <-- Проверяем конфиг
-        # Определяем ID тендера...
+    tender_folder = None
+
+    if ENABLE_DOWNLOADS:
+        logger.info("=== Запуск скачивания документов ===")
+
+        # Определяем ID тендера
         tender_id = "unknown"
         if results:
             import re
             m = re.search(r'/tender/(\d+)/', results[0].url)
             if m:
                 tender_id = m.group(1)
-    else:
-        print("Загрузки отключены в конфиге. Программа завершает работу.")
-        # Принудительный выход из скрипта
-        exit()
 
-        # Определяем ID тендера и добавляем таймстамп
-    tender_id = "unknown"
-    if results:
-        import re
-        m = re.search(r'/tender/(\d+)/', results[0].url)
-        if m:
-            tender_id = m.group(1)
+        # Добавляем таймстамп
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        tender_folder_name = f"{tender_id}_{timestamp}"
+        tender_folder = DOWNLOAD_DIR / tender_folder_name
+        logger.info(f"Папка для скачивания: {tender_folder}")
 
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    # Имя папки: 21487715_2026-01-18_18-30
-    tender_folder_name = f"{tender_id}_{timestamp}"
-    tender_folder = DOWNLOAD_DIR / tender_folder_name
+        # Создаём папку тендера
+        tender_folder.mkdir(parents=True, exist_ok=True)
 
-    logger.info(f"Подготовка к скачиванию документов в папку: {tender_folder}")
+        # Определяем функцию-воркера для скачивания одного файла
+        def download_worker(task_data):
+            """Воркер для скачивания. Использует smart_request + requests.get (стабильно)."""
+            url, file_path, lot_name, part_name, file_name = task_data
+            from pathlib import Path
+            import traceback
 
-    # Создаем базовую папку тендера
-    tender_folder.mkdir(parents=True, exist_ok=True)
+            file_path = Path(file_path)
+            if file_path.exists():
+                logger.debug(f"[SKIP] File exists: {file_name}")
+                return "skipped"
 
-    # Определяем функцию-воркера для скачивания одного файла
-    def download_worker(task_data):
-        """
-        Воркер для скачивания. Использует smart_request + requests.get (стабильно).
-        """
-        url, file_path, lot_name, part_name, file_name = task_data
-
-        from pathlib import Path
-        import traceback
-
-        file_path = Path(file_path)
-
-        if file_path.exists():
-            logger.debug(f"[SKIP] File exists: {file_name}")
-            return "skipped"
-
-        try:
-            # --- ВЫЗОВ УМНОГО ЗАПРОСА ---
-            # Используем requests.get (прямое соединение) для стабильности (без session)
-            response = smart_request(
-                requests.get,
-                url,
-                headers=HEADERS,
-                timeout=60,
-                action_name=f"Download {file_name}"
-            )
-
-            # Записываем файл (r.content - проверенный способ)
-            with open(file_path, 'wb') as f:
-                f.write(response.content)
-
-            # Твой лог успеха
-            logger.info(f"[DOWNLOADED] OK === [{lot_name}] === Part: [{part_name}] === Doc: [{file_name}]")
-            return "success"
-
-        except (requests.exceptions.HTTPError, OSError) as e:
-            # HTTPError: smart_request не смог скачать (404/403 или ретраи кончились)
-            # OSError: Ошибка записи на диск
-            logger.error(f"[FAIL] {file_name}: {e}")
-            return "error"
-
-        # Важно: УБРАЛИ "except Exception", чтобы критические ошибки вылетали наружу в main.py
-
-    # -----------------------------------------------------
-    # Сбор списка задач (планирование путей)
-    # -----------------------------------------------------
-    tasks = []
-
-    for lot_data in results:
-        if not lot_data.title or not lot_data.participants:
-            continue
-
-        # 1. Создаем папку ЛОТА
-        # sanitize_filename уже убирает двоеточия и слэши, но добавим .strip() для надежности
-        lot_folder_name = sanitize_filename(lot_data.title).strip()
-        # Используем оператор / (pathlib)
-        lot_folder = tender_folder / lot_folder_name
-
-        # Если имя пустое после очистки
-        if not lot_folder_name:
-            lot_folder_name = f"Lot_{lot_data.number}"
-
-        if not lot_folder.exists():
             try:
-                lot_folder.mkdir(parents=True, exist_ok=True)
-            except Exception as e:
-                logger.error(f"Не удалось создать папку лота {lot_folder_name}: {e}")
+                # ВЫЗОВ УМНОГО ЗАПРОСА
+                response = smart_request(
+                    requests.get,
+                    url,
+                    headers=HEADERS,
+                    timeout=60,
+                    action_name=f"Download {file_name}"
+                )
+                # Записываем файл
+                with open(file_path, 'wb') as f:
+                    f.write(response.content)
+                # Лог успеха
+                logger.info(f"[DOWNLOADED] OK === [{lot_name}] === Part: [{part_name}] === Doc: [{file_name}]")
+                return "success"
+            except (requests.exceptions.HTTPError, OSError) as e:
+                logger.error(f"[FAIL] {file_name}: {e}")
+                return "error"
+
+        # Сбор списка задач (планирование путей)
+        tasks = []
+        for lot_data in results:
+            if not lot_data.title or not lot_data.participants:
                 continue
 
-        # 2. Цикл по УЧАСТНИКАМ
-        for part in lot_data.participants:
-            if not part.docs:
-                continue
-
-            part_folder_name = sanitize_filename(part.name).strip()
-            # Если имя пустое
-            if not part_folder_name:
-                part_folder_name = "Participant"
-
-            # Оператор /
-            part_folder = lot_folder / part_folder_name
-
-            if not part_folder.exists():
+            # 1. Папка лота
+            lot_folder_name = sanitize_filename(lot_data.title).strip()
+            if not lot_folder_name:
+                lot_folder_name = f"Lot_{lot_data.number}"
+            lot_folder = tender_folder / lot_folder_name
+            if not lot_folder.exists():
                 try:
-                    # parents=True обязательно!
-                    part_folder.mkdir(parents=True, exist_ok=True)
+                    lot_folder.mkdir(parents=True, exist_ok=True)
                 except Exception as e:
-                    logger.error(f"Не удалось создать папку участника {part_folder_name}: {e}")
+                    logger.error(f"Не удалось создать папку лота {lot_folder_name}: {e}")
                     continue
 
-            # 3. Цикл по ФАЙЛАМ (самый глубокий)
-            for filename, url in part.docs:
-
-                # !!! ТУТ ДОЛЖНА БЫТЬ ПРОВЕРКА РАСШИРЕНИЯ !!!
-                # Проверяем расширение (если список не пустой в конфиге)
-                if ALLOWED_EXTENSIONS:
-                    # Приводим к нижнему регистру и проверяем
-                    is_allowed = any(filename.lower().endswith(ext) for ext in ALLOWED_EXTENSIONS)
-                    if not is_allowed:
-                        logger.debug(f"   [SKIP] Тип файла не разрешен: {filename}")
-                        continue  # Переходим к следующему файлу
-
-                clean_filename = sanitize_filename(filename).strip()
-                if not clean_filename:
+            # 2. Цикл по участникам
+            for part in lot_data.participants:
+                if not part.docs:
                     continue
-                # Оператор /
-                save_path = part_folder / clean_filename
 
-                # Добавляем задачу в очередь
-                # Передаем lot_name и part_name только для логов
-                tasks.append((url, save_path, lot_data.title, part.name, filename))
+                part_folder_name = sanitize_filename(part.name).strip()
+                if not part_folder_name:
+                    part_folder_name = "Participant"
+                part_folder = lot_folder / part_folder_name
+                if not part_folder.exists():
+                    try:
+                        part_folder.mkdir(parents=True, exist_ok=True)
+                    except Exception as e:
+                        logger.error(f"Не удалось создать папку участника {part_folder_name}: {e}")
+                        continue
 
-    logger.info(f"Найдено файлов для скачивания: {len(tasks)}. Запуск потоков (Workers: {MAX_WORKERS})...")
+                # 3. Цикл по файлам
+                for filename, url in part.docs:
+                    # Проверка расширения
+                    if ALLOWED_EXTENSIONS:
+                        is_allowed = any(filename.lower().endswith(ext) for ext in ALLOWED_EXTENSIONS)
+                        if not is_allowed:
+                            logger.debug(f"[SKIP] Тип файла не разрешен: {filename}")
+                            continue
 
-    # Запуск параллельной скачки
-    success_count = 0
-    skip_count = 0
-    fail_count = 0
+                    clean_filename = sanitize_filename(filename).strip()
+                    if not clean_filename:
+                        continue
 
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        future_to_task = {executor.submit(download_worker, task): task for task in tasks}
+                    save_path = part_folder / clean_filename
+                    tasks.append((url, save_path, lot_data.title, part.name, filename))
 
-        # Обрабатываем результаты по мере готовности
-        for future in as_completed(future_to_task):
-            result = future.result()
-            if result == "success":
-                success_count += 1
-            elif result == "skipped":
-                skip_count += 1
-            else:
-                fail_count += 1
+        # Если есть что скачивать
+        if tasks:
+            logger.info(f"Найдено файлов для скачивания: {len(tasks)}. Запуск потоков (Workers: {MAX_WORKERS})...")
 
-    logger.info(f"Скачивание завершено. Успешно: {success_count}, Пропущено: {skip_count}, Ошибок: {fail_count}")
+            success_count = 0
+            skip_count = 0
+            fail_count = 0
 
+            with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+                future_to_task = {executor.submit(download_worker, task): task for task in tasks}
+                for future in as_completed(future_to_task):
+                    result = future.result()
+                    if result == "success":
+                        success_count += 1
+                    elif result == "skipped":
+                        skip_count += 1
+                    else:
+                        fail_count += 1
 
+            logger.info(
+                f"Скачивание завершено. Успешно: {success_count}, Пропущено: {skip_count}, Ошибок: {fail_count}")
+        else:
+            logger.info("Нет файлов для скачивания в этом тендере")
+    else:
+        logger.info("Скачивание отключено в конфиге — пропускаем загрузку новых файлов")
+    # -----------------------------------------------------
+    # 8. Обработка PDF (независимо от скачивания)
+    # -----------------------------------------------------
+    if ENABLE_PDF_PROCESSING:
+        logger.info("=== Запуск обработки технических спецификаций из PDF ===")
+
+        # Определяем папку для обработки
+        pdf_folder = None
+        if ENABLE_DOWNLOADS and tender_folder is not None and tender_folder.exists():
+            pdf_folder = tender_folder
+            logger.info(f"Используем свежескачанную папку: {pdf_folder}")
+        elif USE_LATEST_DOWNLOAD_FOLDER:
+            try:
+                # Находим самую свежую папку в DOWNLOAD_DIR (по времени создания)
+                pdf_folder = max(
+                    (p for p in DOWNLOAD_DIR.iterdir() if p.is_dir()),
+                    key=lambda p: p.stat().st_ctime,
+                    default=None
+                )
+                if pdf_folder:
+                    logger.info(f"Используем самую свежую существующую папку: {pdf_folder}")
+                else:
+                    logger.warning("Нет ни одной папки в downloads — пропускаем PDF-обработку")
+            except Exception as e:
+                logger.error(f"Ошибка поиска последней папки: {e}")
+        else:
+            logger.info("USE_LATEST_DOWNLOAD_FOLDER выключено — пропускаем PDF без новой загрузки")
+
+        if pdf_folder and pdf_folder.exists():
+            try:
+                from src.utils.pdf.pdf_processor import process_all_participants
+
+                pdf_results = process_all_participants(pdf_folder)
+
+                if pdf_results:
+                    logger.info(f"Обработано участников из PDF: {len(pdf_results)}")
+
+                    updated_count = 0
+                    for res in pdf_results:
+                        if res.error:
+                            logger.warning(f"PDF ошибка {res.participant_name} (лот {res.lot_name}): {res.error}")
+                            continue
+
+                        try:
+                            lot_nr = int(res.lot_name) if res.lot_name.isdigit() else int(res.lot_name.split()[-1])
+                            excel_manager.write_pdf_data_to_participant(
+                                lot_number=lot_nr,
+                                participant_name=res.participant_name,
+                                model=res.model,
+                                country=res.country,
+                                manufacturer=res.manufacturer,
+                                specification_text=res.specification_text
+                            )
+                            updated_count += 1
+                        except Exception as e:
+                            logger.error(f"Ошибка записи PDF-данных для {res.participant_name}: {e}")
+
+                    logger.info(f"Успешно обновлено из PDF: {updated_count} участников")
+                else:
+                    logger.info("PDF-результаты пустые — ничего не обновлено")
+
+            except ImportError as ie:
+                logger.error(f"Ошибка импорта PDF-модулей: {ie}")
+            except Exception as e:
+                logger.error(f"Критическая ошибка обработки PDF: {e}")
+        else:
+            logger.info("Папка с PDF-файлами не найдена — пропускаем обработку")
+    else:
+        logger.info("Обработка PDF отключена в конфиге (ENABLE_PDF_PROCESSING=False)")
 if __name__ == "__main__":
     main()

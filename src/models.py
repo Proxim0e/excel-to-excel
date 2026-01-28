@@ -1,7 +1,7 @@
-from dataclasses import dataclass, field
-from typing import List, Optional
-from dataclasses import dataclass, field
+
 from typing import List, Optional, Tuple
+from dataclasses import dataclass, field
+
 @dataclass
 class Participant:
     """
@@ -23,3 +23,14 @@ class LotData:
     title: Optional[str] = None  # Заголовок страницы лота (H1)
     participants: List[Participant] = field(default_factory=list)
     error: Optional[str] = None   # Если при парсинге произошла ошибка
+
+@dataclass
+class ParticipantProcessingResult:
+    participant_name: str
+    lot_name: str
+    model: Optional[str] = None
+    country: Optional[str] = None
+    manufacturer: Optional[str] = None
+    specification_text: Optional[str] = None
+    spec_file_path: Optional[str] = None
+    error: Optional[str] = None
