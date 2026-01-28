@@ -30,7 +30,17 @@ HEADERS: Dict[str, str] = {
 # Логика и Пороги
 
 DOWNLOAD_RETRIES = 25 # попытки парсить и грузить
-MAX_WORKERS: int = 16 # потоки
+MAX_WORKERS: int = 50 # потоки
+
+PDF_FUZZY_THRESHOLD = 95
+PDF_MAX_PAGES_FOR_CONTENT_CHECK = 100
+PDF_MAX_WORKERS_FOR_CONTENT_CHECK = 2
+PDF_SPEC_ROW = 11
+PDF_DATA_ROW = 3      # строка для Producator/Țara/Model
+
+# Включить/Выключить скачивание файлов
+# Если False - скрипт создаст только Excel, файлы качаться не будут
+ENABLE_DOWNLOADS: bool = False
 # ---------------------------------------------------------------------------
 # Поведение при существующих листах
 APPEND_TO_EXISTING: bool = False
@@ -69,11 +79,32 @@ TARGET_MAP: Dict[str, Tuple[str, ...]] = {
 # Папка для сохранения документов
 DOWNLOAD_DIR: Path = BASE_DIR / "downloads"
 
-# Включить/Выключить скачивание файлов
-# Если False - скрипт создаст только Excel, файлы качаться не будут
-ENABLE_DOWNLOADS: bool = True
+
 
 # Разрешенные расширения для скачивания.
 # Если оставить список пустым [] - будут качаться ВСЕ файлы (как мы и планировали).
 # Если добавить [".pdf"] - будут качаться только PDF.
 ALLOWED_EXTENSIONS = [".pdf"]
+
+# PDF processing settings
+PDF_KEYWORDS_FILENAME = [
+    "Anexa 22", "a22", "anexa22", "st",
+    "specificatii tehnice", "specificatiitehnice",
+    "specificații tehnice", "specificațiitehnice",
+    "formulare teh", "specificatii tehnice 22",
+    "specificatia tehnica", "anexa 22 specificatii tehnice",
+    "anexanr22"
+]
+
+PDF_KEYWORDS_CONTENT = [
+    "Specificarea tehnică deplină propusă de către ofertant", "Anexa nr. 22", "Specificaţii tehnice",
+    " Specificatie tehnică propus  de ofertant", "Specificația tehnică propusă de \noperatorul economic", "прил. 22",
+    "модель", "производитель", "страна происхождения", "изготовитель"
+]
+
+
+# ----------------------------------------------------------------------------
+# Настройки обработки PDF (независимо от скачивания)
+# ----------------------------------------------------------------------------
+ENABLE_PDF_PROCESSING: bool = True          # Включи/выключи обработку PDF
+USE_LATEST_DOWNLOAD_FOLDER: bool = True     # Использовать самую свежую папку в downloads, если нет новой
