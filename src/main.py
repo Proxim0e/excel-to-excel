@@ -1,3 +1,4 @@
+import re
 import concurrent.futures
 import logging
 from pathlib import Path
@@ -10,13 +11,14 @@ from datetime import datetime
 from src.utils.http_client import smart_request
 import requests
 import os
-from .config import(
+
+from config import(
     RESOURCE_DIR, TEMPLATE_FILE,
     MAX_WORKERS, DEFAULT_TENDER_URL, APPEND_TO_EXISTING, ENABLE_DOWNLOADS, DOWNLOAD_DIR, ALLOWED_EXTENSIONS, HEADERS
 )
-from .scrapers.lot_parser import TenderScraper
-from .excel.writer import ExcelManager
-from .excel.reader import get_parent_data, get_tender_url_from_parent
+from scrapers.lot_parser import TenderScraper
+from excel.writer import ExcelManager
+from excel.reader import get_parent_data, get_tender_url_from_parent
 
 # Отключаем лишние логи от библиотек requests и urllib3
 logging.getLogger("urllib3").setLevel(logging.WARNING)
@@ -24,7 +26,7 @@ logging.getLogger("requests").setLevel(logging.WARNING)
 
 # Настройка логирования (вместо простых print)
 logging.basicConfig(level=logging.INFO, format='[%(levelname)s] %(message)s', force=True)
-#logging.basicConfig(level=logging.DEBUG, format='%(asctime)s [%(levelname)s] %(message)s')
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s [%(levelname)s] %(message)s')
 logger = logging.getLogger(__name__)
 
 
@@ -163,19 +165,68 @@ def main():
             except Exception as e:
                 logger.error(f"Критическая ошибка при обработке {url}: {e}")
 
-    # -----------------------------------------------------
-    # 5. Запись участников в Excel
-    # -----------------------------------------------------
+        # -----------------------------------------------------
+        # 5. Запись участников в Excel
+        # -----------------------------------------------------
     logger.info("Запись участников в Excel...")
     processed_count = 0
+    skipped_errors = 0
+    skipped_no_number = 0
+    failed_writes = 0
+    restored_count = 0
+
     for lot_data in results:
-        if lot_data.number:
-            logger.info(f"Обработан лот {lot_data.number}: {len(lot_data.participants)} участн.")
+        if not lot_data:
+            skipped_errors += 1
+            continue
+
+        if lot_data.error:
+            logger.warning(f"Лот пропущен из-за ошибки парсинга: {lot_data.error}")
+            skipped_errors += 1
+            continue
+
+        # --- ВОССТАНОВЛЕНИЕ НОМЕРА ---
+        if not lot_data.number and lot_data.title:
+            # МАГИЯ PYTHON: .split() без аргументов сам разрывает строку по ВСЕМ пробелам, табам и \n
+            # А " ".join(...) склеивает обратно через 1 пробел. Никаких import re не нужно!
+            scraped_clean = " ".join(lot_data.title.split()).strip().lower()
+
+            for parent_num, parent_info in parent_data.items():
+                parent_title = parent_info.get('denumire', '')
+                if not parent_title:
+                    continue
+
+                parent_clean = " ".join(parent_title.split()).strip().lower()
+
+                if parent_clean in scraped_clean or scraped_clean in parent_clean:
+                    lot_data.number = parent_num
+                    restored_count += 1
+                    logger.info(f"✅ Номер лота восстановлен из родительского файла: {parent_num}")
+                    break
+        # --- КОНЕЦ ВОССТАНОВЛЕНИЯ ---
+
+        if not lot_data.number:
+            title = lot_data.title or "Без названия"
+            logger.warning(f"Лот пропущен: отсутствует номер (заголовок: '{title[:60]}...').")
+            skipped_no_number += 1
+            continue
+
+        try:
+            logger.debug(f"Запись в лот {lot_data.number}: {len(lot_data.participants)} участн.")
             excel_manager.write_participants(lot_data)
             processed_count += 1
+        except Exception as e:
+            logger.error(f"КРИТИЧЕСКАЯ ОШИБКА записи лота {lot_data.number} в Excel: {e}")
+            failed_writes += 1
 
+    logger.info(
+        f"Запись участников завершена. Успешно: {processed_count} | "
+        f"Восстановлено: {restored_count} | "
+        f"Пропущено: {skipped_errors + skipped_no_number} | "
+        f"Ошибки записи: {failed_writes}"
+    )
     # -----------------------------------------------------
-    # 6. Сохранение файла
+    # 6. Сохранение файла (ДОЛЖНО БЫТЬ ПЕРЕД ЗАГРУЗКАМИ!)
     # -----------------------------------------------------
     timestamp = datetime.now().strftime("%d.%m.%Y_%H-%M-%S")
     output_filename = RESOURCE_DIR / f"result_{timestamp}.xlsx"
@@ -185,6 +236,7 @@ def main():
         logger.info(f"=== ГОТОВО! Файл сохранен: {output_filename} ===")
     except Exception as e:
         logger.error(f"Ошибка при сохранении файла: {e}")
+
     # -----------------------------------------------------
     # 7. Скачивание всех документов (PDF) - Параллельно
     # -----------------------------------------------------

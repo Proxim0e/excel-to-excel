@@ -14,7 +14,7 @@ TEMPLATE_FILE = RESOURCE_DIR / "sample_model.xlsx"
 # ---------------------------------------------------------------------------
 # Web / Scraper Settings
 # ---------------------------------------------------------------------------
-DEFAULT_TENDER_URL: str = "https://achizitii.md/ro/public/tender/21463176"
+DEFAULT_TENDER_URL: str = "https://achizitii.md/ro/public/tender/21613654"
 BASE: str = "https://achizitii.md"
 
 # Шаблон регулярного выражения для распознавания ссылок на лоты
@@ -24,13 +24,11 @@ HEADERS: Dict[str, str] = {
     "User-Agent": "Mozilla/5.0 (compatible; scraper/1.0; +https://example.com/bot)"
 }
 
-
-
 # ---------------------------------------------------------------------------
 # Логика и Пороги
 
 DOWNLOAD_RETRIES = 25 # попытки парсить и грузить
-MAX_WORKERS: int = 16 # потоки
+MAX_WORKERS: int = 6 # потоки
 # ---------------------------------------------------------------------------
 # Поведение при существующих листах
 APPEND_TO_EXISTING: bool = False
@@ -71,7 +69,7 @@ DOWNLOAD_DIR: Path = BASE_DIR / "downloads"
 
 # Включить/Выключить скачивание файлов
 # Если False - скрипт создаст только Excel, файлы качаться не будут
-ENABLE_DOWNLOADS: bool = True
+ENABLE_DOWNLOADS: bool = False
 
 # Разрешенные расширения для скачивания.
 # Если оставить список пустым [] - будут качаться ВСЕ файлы (как мы и планировали).
