@@ -1,20 +1,17 @@
 import re
 import concurrent.futures
 import logging
-from pathlib import Path
-from urllib3 import disable_warnings
-from urllib3.exceptions import InsecureRequestWarning  # Иногда бывает полезно
-from src.utils.text_helpers import normalize_spaces, prepare_lot_title_for_b1
-from src.utils.file_helpers import sanitize_filename
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
-from src.utils.http_client import smart_request
-import requests
-import os
 
-from config import(
-    RESOURCE_DIR, TEMPLATE_FILE,
-    MAX_WORKERS, DEFAULT_TENDER_URL, APPEND_TO_EXISTING, ENABLE_DOWNLOADS, DOWNLOAD_DIR, ALLOWED_EXTENSIONS, HEADERS
+import requests
+
+from src.utils.file_helpers import sanitize_filename
+from src.utils.http_client import smart_request
+from src.utils.text_helpers import normalize_spaces, prepare_lot_title_for_b1
+
+from config import (
+    RESOURCE_DIR, MAX_WORKERS, DEFAULT_TENDER_URL, ENABLE_DOWNLOADS, DOWNLOAD_DIR, ALLOWED_EXTENSIONS, HEADERS, ONLY_DOWNLOAD
 )
 from scrapers.lot_parser import TenderScraper
 from excel.writer import ExcelManager
@@ -25,8 +22,12 @@ logging.getLogger("urllib3").setLevel(logging.WARNING)
 logging.getLogger("requests").setLevel(logging.WARNING)
 
 # Настройка логирования (вместо простых print)
-logging.basicConfig(level=logging.INFO, format='[%(levelname)s] %(message)s', force=True)
-logging.basicConfig(level=logging.DEBUG, format='%(asctime)s [%(levelname)s] %(message)s')
+logging.basicConfig(
+    level=logging.INFO,
+    format='[%(asctime)s] [%(levelname)s] %(message)s',
+    force=True
+)
+#logging.basicConfig(level=logging.DEBUG, format='%(asctime)s [%(levelname)s] %(message)s')
 logger = logging.getLogger(__name__)
 
 
@@ -36,103 +37,79 @@ def main():
     # -----------------------------------------------------
     # 1. Инициализация и чтение родительского файла
     # -----------------------------------------------------
-    try:
-        parent_data = get_parent_data()
-        logger.info(f"Загружено {len(parent_data)} лотов из родительского файла.")
-    except FileNotFoundError as e:
-        logger.error(e)
-        return
-    except Exception as e:
-        logger.error(f"Ошибка при чтении родительского файла: {e}")
-        return
+    parent_data = {}
+    tender_url = DEFAULT_TENDER_URL
 
-    # -----------------------------------------------------
-    # 2. Получение URL тендера
-    # -----------------------------------------------------
-    tender_url = get_tender_url_from_parent()
-    if not tender_url:
-        tender_url = DEFAULT_TENDER_URL
-        logger.warning(f"URL тендера не найден в родительском файле. Использую дефолтный: {tender_url}")
-    else:
-        logger.info(f"Найден Tender URL: {tender_url}")
+    if not ONLY_DOWNLOAD:
+        try:
+            parent_data = get_parent_data()
+            logger.info(f"Загружено {len(parent_data)} лотов из родительского файла.")
+        except FileNotFoundError as e:
+            logger.error(e)
+            return
+        except Exception as e:
+            logger.error(f"Ошибка при чтении родительского файла: {e}")
+            return
 
-    # -----------------------------------------------------
-    # 3. Подготовка Excel Manager
-    # -----------------------------------------------------
-    excel_manager = ExcelManager()
-
-    # Фаза А: Создание листов на основе родительского файла
-    # Мы проходим по данным из родительского файла, чтобы создать листы (или убедиться, что они есть)
-    # и заполнить их базовой мета-информацией.
-
-    logger.info("Подготовка структуры Excel...")
-    created_count = 0
-    updated_count = 0
-    skipped_count = 0
-
-    for lot_num, lot_info in parent_data.items():
-        # Пытаемся получить или создать лист
-        ws = excel_manager.get_or_create_sheet(lot_num)
-
-        # Если метод вернул None -> мы в режиме APPEND_TO_EXISTING=False и лист старый -> пропускаем
-        if not ws:
-            logger.debug(f"Лот {lot_num}: Пропущен (лист уже существовал, APPEND_TO_EXISTING=False)")
-            skipped_count += 1
-            continue
-
-        # Определяем статус обработки
-        is_new_lot = (excel_manager.max_existing < lot_num)
-        if is_new_lot:
-            created_count += 1
-            logger.info(f" Создан лист {lot_num}.")
+        # -----------------------------------------------------
+        # 2. Получение URL тендера
+        # -----------------------------------------------------
+        tender_url = get_tender_url_from_parent()
+        if not tender_url:
+            tender_url = DEFAULT_TENDER_URL
+            logger.warning(f"URL тендера не найден в родительском файле. Использую дефолтный: {tender_url}")
         else:
-            updated_count += 1
-            logger.info(f"Лот {lot_num}: ИСПОЛЬЗУЕТСЯ существующий лист.")
+            logger.info(f"Найден Tender URL: {tender_url}")
 
-        # --- Заполнение данных ---
+        # -----------------------------------------------------
+        # 3. Подготовка Excel Manager
+        # -----------------------------------------------------
+        excel_manager = ExcelManager()
+        logger.info("Подготовка структуры Excel...")
+        created_count = 0
+        updated_count = 0
+        skipped_count = 0
 
-        lot_title = lot_info.get('denumire')
-        if lot_title:
-            ws["B1"] = f"Lot nr. {lot_num} {lot_title}".strip()
-            logger.debug(f"   -> Заголовок (B1): обновлен")
-        else:
-            logger.debug(f"   -> Заголовок (B1): данных нет")
+        for lot_num, lot_info in parent_data.items():
+            ws = excel_manager.get_or_create_sheet(lot_num)
+            if not ws:
+                skipped_count += 1
+                continue
 
-        lot_specification = lot_info.get('specificatie')
-        if lot_specification:
-            current_b11 = ws["B11"].value
-            if current_b11 and lot_specification not in str(current_b11):
-                ws["B11"] = f"{current_b11}\n{lot_specification}"
-                logger.debug(f"   -> Спецификация (B11): добавлена")
-            elif not current_b11:
-                ws["B11"] = str(lot_specification)
-                logger.debug(f"   -> Спецификация (B11): записана")
+            is_new_lot = (excel_manager.max_existing < lot_num)
+            if is_new_lot:
+                created_count += 1
             else:
-                logger.debug(f"   -> Спецификация (B11): уже существует")
-        else:
-            logger.debug(f"   -> Спецификация (B11): данных нет")
+                updated_count += 1
 
-        # Остальные поля
-        unit_of_measure = lot_info.get('unitate_masura')
-        total_quantity = lot_info.get('cantitate_total')
-        allocated_sum = lot_info.get('suma_alocata')
+            lot_title = lot_info.get('denumire')
+            if lot_title:
+                ws["B1"] = f"Lot nr. {lot_num} {lot_title}".strip()
 
-        if unit_of_measure:
-            ws["C9"] = unit_of_measure
-            logger.debug(f"   -> Ед. изм (C9): {unit_of_measure}")
+            lot_specification = lot_info.get('specificatie')
+            if lot_specification:
+                current_b11 = ws["B11"].value
+                if current_b11 and lot_specification not in str(current_b11):
+                    ws["B11"] = f"{current_b11}\n{lot_specification}"
+                elif not current_b11:
+                    ws["B11"] = str(lot_specification)
 
-        if total_quantity:
-            ws["A1"] = total_quantity
-            logger.debug(f"   -> Кол-во (A1): {total_quantity}")
+            unit_of_measure = lot_info.get('unitate_masura')
+            total_quantity = lot_info.get('cantitate_total')
+            allocated_sum = lot_info.get('suma_alocata')
 
-        if allocated_sum:
-            ws["D8"] = allocated_sum
-            logger.debug(f"   -> Сумма (D8): {allocated_sum}")
+            if unit_of_measure:
+                ws["C9"] = unit_of_measure
+            if total_quantity:
+                ws["A1"] = total_quantity
+            if allocated_sum:
+                ws["D8"] = allocated_sum
 
-    logger.info(
-        f"Excel структура готова. Создано: {created_count}, Обновлено: {updated_count}, Пропущено: {skipped_count}")
-
-    logger.info("Excel структура готова.")
+        logger.info(f"Excel структура готова. Создано: {created_count}, Обновлено: {updated_count}, Пропущено: {skipped_count}")
+    else:
+        logger.info("=== РЕЖИМ ONLY_DOWNLOAD: Работа с Excel полностью пропущена. ===")
+        # В этом режиме используем дефолтный URL
+        logger.info(f"Использую дефолтный Tender URL: {tender_url}")
 
     # -----------------------------------------------------
     # 4. Скрапинг ссылок и данных лотов
@@ -166,77 +143,74 @@ def main():
                 logger.error(f"Критическая ошибка при обработке {url}: {e}")
 
         # -----------------------------------------------------
-        # 5. Запись участников в Excel
+        # 5. Запись участников в Excel (Пропускаем, если ONLY_DOWNLOAD)
         # -----------------------------------------------------
-    logger.info("Запись участников в Excel...")
-    processed_count = 0
-    skipped_errors = 0
-    skipped_no_number = 0
-    failed_writes = 0
-    restored_count = 0
+    if not ONLY_DOWNLOAD:
+        logger.info("Запись участников в Excel...")
+        processed_count = 0
+        skipped_errors = 0
+        skipped_no_number = 0
+        failed_writes = 0
+        restored_count = 0
 
-    for lot_data in results:
-        if not lot_data:
-            skipped_errors += 1
-            continue
+        for lot_data in results:
+            if not lot_data:
+                skipped_errors += 1
+                continue
 
-        if lot_data.error:
-            logger.warning(f"Лот пропущен из-за ошибки парсинга: {lot_data.error}")
-            skipped_errors += 1
-            continue
+            if lot_data.error:
+                skipped_errors += 1
+                continue
 
-        # --- ВОССТАНОВЛЕНИЕ НОМЕРА ---
-        if not lot_data.number and lot_data.title:
-            # МАГИЯ PYTHON: .split() без аргументов сам разрывает строку по ВСЕМ пробелам, табам и \n
-            # А " ".join(...) склеивает обратно через 1 пробел. Никаких import re не нужно!
-            scraped_clean = " ".join(lot_data.title.split()).strip().lower()
+            if not lot_data.number and lot_data.title:
+                scraped_clean = " ".join(lot_data.title.split()).strip().lower()
 
-            for parent_num, parent_info in parent_data.items():
-                parent_title = parent_info.get('denumire', '')
-                if not parent_title:
-                    continue
+                for parent_num, parent_info in parent_data.items():
+                    parent_title = parent_info.get('denumire', '')
+                    if not parent_title:
+                        continue
 
-                parent_clean = " ".join(parent_title.split()).strip().lower()
+                    parent_clean = " ".join(parent_title.split()).strip().lower()
 
-                if parent_clean in scraped_clean or scraped_clean in parent_clean:
-                    lot_data.number = parent_num
-                    restored_count += 1
-                    logger.info(f"✅ Номер лота восстановлен из родительского файла: {parent_num}")
-                    break
-        # --- КОНЕЦ ВОССТАНОВЛЕНИЯ ---
+                    if parent_clean in scraped_clean or scraped_clean in parent_clean:
+                        lot_data.number = parent_num
+                        restored_count += 1
+                        logger.info(f"✅ Номер лота восстановлен из родительского файла: {parent_num}")
+                        break
 
-        if not lot_data.number:
-            title = lot_data.title or "Без названия"
-            logger.warning(f"Лот пропущен: отсутствует номер (заголовок: '{title[:60]}...').")
-            skipped_no_number += 1
-            continue
+            if not lot_data.number:
+                title = lot_data.title or "Без названия"
+                logger.warning(f"Лот пропущен: отсутствует номер (заголовок: '{title[:60]}...').")
+                skipped_no_number += 1
+                continue
 
-        try:
-            logger.debug(f"Запись в лот {lot_data.number}: {len(lot_data.participants)} участн.")
-            excel_manager.write_participants(lot_data)
-            processed_count += 1
-        except Exception as e:
-            logger.error(f"КРИТИЧЕСКАЯ ОШИБКА записи лота {lot_data.number} в Excel: {e}")
-            failed_writes += 1
+            try:
+                excel_manager.write_participants(lot_data)
+                processed_count += 1
+            except Exception as e:
+                logger.error(f"КРИТИЧЕСКАЯ ОШИБКА записи лота {lot_data.number} в Excel: {e}")
+                failed_writes += 1
 
-    logger.info(
-        f"Запись участников завершена. Успешно: {processed_count} | "
-        f"Восстановлено: {restored_count} | "
-        f"Пропущено: {skipped_errors + skipped_no_number} | "
-        f"Ошибки записи: {failed_writes}"
-    )
+        logger.info(
+            f"Запись участников завершена. Успешно: {processed_count} | "
+            f"Восстановлено: {restored_count} | "
+            f"Пропущено: {skipped_errors + skipped_no_number} | "
+            f"Ошибки записи: {failed_writes}"
+        )
     # -----------------------------------------------------
     # 6. Сохранение файла (ДОЛЖНО БЫТЬ ПЕРЕД ЗАГРУЗКАМИ!)
     # -----------------------------------------------------
-    timestamp = datetime.now().strftime("%d.%m.%Y_%H-%M-%S")
-    output_filename = RESOURCE_DIR / f"result_{timestamp}.xlsx"
+    if not ONLY_DOWNLOAD:
+        timestamp = datetime.now().strftime("%d.%m.%Y_%H-%M-%S")
+        output_filename = RESOURCE_DIR / f"result_{timestamp}.xlsx"
 
-    try:
-        excel_manager.save(str(output_filename))
-        logger.info(f"=== ГОТОВО! Файл сохранен: {output_filename} ===")
-    except Exception as e:
-        logger.error(f"Ошибка при сохранении файла: {e}")
-
+        try:
+            excel_manager.save(str(output_filename))
+            logger.info(f"=== ГОТОВО! Файл сохранен: {output_filename} ===")
+        except Exception as e:
+            logger.error(f"Ошибка при сохранении файла: {e}")
+    else:
+        logger.info("=== РЕЖИМ ONLY_DOWNLOAD: Пропуск сохранения Excel ===")
     # -----------------------------------------------------
     # 7. Скачивание всех документов (PDF) - Параллельно
     # -----------------------------------------------------
@@ -279,7 +253,6 @@ def main():
         url, file_path, lot_name, part_name, file_name = task_data
 
         from pathlib import Path
-        import traceback
 
         file_path = Path(file_path)
 
@@ -290,6 +263,7 @@ def main():
         try:
             # --- ВЫЗОВ УМНОГО ЗАПРОСА ---
             # Используем requests.get (прямое соединение) для стабильности (без session)
+            logger.info(f"[START] Скачивание: {file_name} (Лот: {lot_name})")
             response = smart_request(
                 requests.get,
                 url,
@@ -299,17 +273,28 @@ def main():
             )
 
             # Записываем файл (r.content - проверенный способ)
+            file_size_kb = len(response.content) // 1024
             with open(file_path, 'wb') as f:
                 f.write(response.content)
 
             # Твой лог успеха
-            logger.info(f"[DOWNLOADED] OK === [{lot_name}] === Part: [{part_name}] === Doc: [{file_name}]")
+            logger.info(
+                f"[DOWNLOADED] OK ({file_size_kb} KB) === [{lot_name}] === Part: [{part_name}] === Doc: [{file_name}]")
             return "success"
 
-        except (requests.exceptions.HTTPError, OSError) as e:
-            # HTTPError: smart_request не смог скачать (404/403 или ретраи кончились)
-            # OSError: Ошибка записи на диск
-            logger.error(f"[FAIL] {file_name}: {e}")
+        except requests.exceptions.HTTPError as e:
+            # Ошибка HTTP (404, 403, или кончились попытки 503)
+            logger.error(f"[FAIL-HTTP] {file_name}: {e}")
+            return "error"
+
+        except OSError as e:
+            # Ошибка записи на диск (нет места, нет прав, слишком длинный путь)
+            logger.critical(f"[FAIL-DISK] Ошибка записи файла {file_name} (Диск/Путь): {e}")
+            return "error"
+
+        except Exception as e:
+            # Любая другая unforeseen ошибка (чтобы скрипт не падал молча)
+            logger.critical(f"[FAIL-UNKNOWN] {file_name}: {type(e).__name__} - {e}")
             return "error"
 
         # Важно: УБРАЛИ "except Exception", чтобы критические ошибки вылетали наружу в main.py
@@ -389,6 +374,7 @@ def main():
     success_count = 0
     skip_count = 0
     fail_count = 0
+    processed_count = 0  # <--- ДОБАВИЛИ СЧЕТЧИК
 
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         future_to_task = {executor.submit(download_worker, task): task for task in tasks}
@@ -396,13 +382,17 @@ def main():
         # Обрабатываем результаты по мере готовности
         for future in as_completed(future_to_task):
             result = future.result()
+            processed_count += 1  # <--- УВЕЛИЧИВАЕМ
             if result == "success":
                 success_count += 1
             elif result == "skipped":
                 skip_count += 1
             else:
                 fail_count += 1
-
+                # <--- ДОБАВЛЕН ЛОГ ПРОГРЕССА КАЖДЫЕ 50 ФАЙЛОВ --->
+            if processed_count % 50 == 0:
+                logger.info(
+                    f"--- ПРОГРЕСС: {processed_count}/{len(tasks)} файлов обработано. (Успешно: {success_count} | Ошибок: {fail_count}) ---")
     logger.info(f"Скачивание завершено. Успешно: {success_count}, Пропущено: {skip_count}, Ошибок: {fail_count}")
 
 
