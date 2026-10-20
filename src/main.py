@@ -1,9 +1,11 @@
 import re
 import concurrent.futures
 import logging
+import time
+from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime
-
+import shutil
+import threading
 import requests
 
 from src.utils.file_helpers import sanitize_filename
@@ -32,6 +34,7 @@ logger = logging.getLogger(__name__)
 
 
 def main():
+
     logger.info("=== Запуск процесса синхронизации лотов ===")
 
     # -----------------------------------------------------
@@ -245,24 +248,40 @@ def main():
     # Создаем базовую папку тендера
     tender_folder.mkdir(parents=True, exist_ok=True)
 
+    # --- Словарь для локального копирования повторяющихся файлов ---
+    url_cache = {}
+    cache_lock = threading.Lock()
+
     # Определяем функцию-воркера для скачивания одного файла
     def download_worker(task_data):
         """
-        Воркер для скачивания. Использует smart_request + requests.get (стабильно).
+        Воркер для скачивания. Использует smart_request + локальный кэш.
         """
         url, file_path, lot_name, part_name, file_name = task_data
-
         from pathlib import Path
-
         file_path = Path(file_path)
 
+        # 1. Проверяем, есть ли файл УЖЕ в нужной папке (докачка с прошлого запуска)
         if file_path.exists():
-            logger.debug(f"[SKIP] File exists: {file_name}")
-            return "skipped"
+            logger.info(f"[SKIP] Уже на месте: {file_name}")
+            return "copied"
 
+        # 2. Проверяем, скачивали ли мы этот URL ранее в ЭТОТ запуск скрипта?
+        with cache_lock:
+            cached_path = url_cache.get(url)
+
+        # Если файл уже скачивался в другую папку, просто копируем его локально!
+        if cached_path and Path(cached_path).exists():
+            try:
+                file_path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(cached_path, file_path)
+                logger.info(f"[COPIED] Скопирован из кэша: {file_name} (Лот: {lot_name})")
+                return "copied"
+            except Exception as e:
+                logger.warning(f"Не удалось скопировать {file_name}: {e}. Будем качать заново.")
+
+        # 3. Если файла нигде нет, скачиваем его с сервера
         try:
-            # --- ВЫЗОВ УМНОГО ЗАПРОСА ---
-            # Используем requests.get (прямое соединение) для стабильности (без session)
             logger.info(f"[START] Скачивание: {file_name} (Лот: {lot_name})")
             response = smart_request(
                 requests.get,
@@ -272,33 +291,28 @@ def main():
                 action_name=f"Download {file_name}"
             )
 
-            # Записываем файл (r.content - проверенный способ)
-            file_size_kb = len(response.content) // 1024
+            file_path.parent.mkdir(parents=True, exist_ok=True)
             with open(file_path, 'wb') as f:
                 f.write(response.content)
 
-            # Твой лог успеха
+            # 4. СОХРАНЯЕМ ПУТЬ В КЭШ, чтобы для других лотов скопировать его
+            with cache_lock:
+                url_cache[url] = str(file_path)
+
+            file_size_kb = len(response.content) // 1024
             logger.info(
                 f"[DOWNLOADED] OK ({file_size_kb} KB) === [{lot_name}] === Part: [{part_name}] === Doc: [{file_name}]")
             return "success"
 
         except requests.exceptions.HTTPError as e:
-            # Ошибка HTTP (404, 403, или кончились попытки 503)
             logger.error(f"[FAIL-HTTP] {file_name}: {e}")
             return "error"
-
         except OSError as e:
-            # Ошибка записи на диск (нет места, нет прав, слишком длинный путь)
             logger.critical(f"[FAIL-DISK] Ошибка записи файла {file_name} (Диск/Путь): {e}")
             return "error"
-
         except Exception as e:
-            # Любая другая unforeseen ошибка (чтобы скрипт не падал молча)
             logger.critical(f"[FAIL-UNKNOWN] {file_name}: {type(e).__name__} - {e}")
             return "error"
-
-        # Важно: УБРАЛИ "except Exception", чтобы критические ошибки вылетали наружу в main.py
-
     # -----------------------------------------------------
     # Сбор списка задач (планирование путей)
     # -----------------------------------------------------
@@ -368,12 +382,19 @@ def main():
                 # Передаем lot_name и part_name только для логов
                 tasks.append((url, save_path, lot_data.title, part.name, filename))
 
-    logger.info(f"Найдено файлов для скачивания: {len(tasks)}. Запуск потоков (Workers: {MAX_WORKERS})...")
+    # Считаем уникальные ссылки, чтобы понимать, сколько файлов реально качать из сети
+    unique_urls = len(set(task[0] for task in tasks))
 
+    logger.info(
+        f"Найдено файлов для скачивания: {len(tasks)} (из них {unique_urls} уникальных ссылок). Запуск потоков (Workers: {MAX_WORKERS})...")
+    # Запускаем таймер и сохраняем общее количество файлов
+    start_download_time = time.time()
+    total_tasks = len(tasks)
     # Запуск параллельной скачки
     success_count = 0
-    skip_count = 0
+    copied_count = 0
     fail_count = 0
+    skipped_count = 0
     processed_count = 0  # <--- ДОБАВИЛИ СЧЕТЧИК
 
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
@@ -385,15 +406,57 @@ def main():
             processed_count += 1  # <--- УВЕЛИЧИВАЕМ
             if result == "success":
                 success_count += 1
-            elif result == "skipped":
-                skip_count += 1
+            elif result == "copied":
+                copied_count += 1
+            elif result == "skipped":  # <--- ДОБАВИЛИ
+                skipped_count += 1  # <--- Файл уже был на диске, пропустили
             else:
                 fail_count += 1
                 # <--- ДОБАВЛЕН ЛОГ ПРОГРЕССА КАЖДЫЕ 50 ФАЙЛОВ --->
-            if processed_count % 50 == 0:
+            if processed_count % 10 == 0 or processed_count == total_tasks:
+                elapsed_time = time.time() - start_download_time
+
+                # Вычисляем проценты
+                percent = (processed_count / total_tasks) * 100
+
+                # Вычисляем оставшееся время (ETA)
+                if elapsed_time > 0:
+                    speed = processed_count / elapsed_time  # Файлов в секунду
+                    remaining_files = total_tasks - processed_count
+                    eta_seconds = remaining_files / speed
+
+                    # Форматируем секунды в ЧЧ:ММ:СС
+                    eta_formatted = str(timedelta(seconds=int(eta_seconds)))
+                else:
+                    eta_formatted = "расчет..."
+
                 logger.info(
-                    f"--- ПРОГРЕСС: {processed_count}/{len(tasks)} файлов обработано. (Успешно: {success_count} | Ошибок: {fail_count}) ---")
-    logger.info(f"Скачивание завершено. Успешно: {success_count}, Пропущено: {skip_count}, Ошибок: {fail_count}")
+                    f"--- ПРОГРЕСС: {processed_count}/{total_tasks} ({percent:.1f}%) | "
+                    f"Осталось: ~{eta_formatted} | "
+                    f"Файлов в секунду: ~{speed} | "
+                    f"Успешно: {success_count} | Ошибок: {fail_count} ---"
+                )
+    # --- ПРОВЕРКА ФАКТИЧЕСКИХ ФАЙЛОВ НА ДИСКЕ ---
+    saved_on_disk = 0
+    try:
+        saved_on_disk = sum(1 for x in tender_folder.rglob('*') if x.is_file())
+    except Exception as e:
+        logger.warning(f"Не удалось посчитать файлы на диске: {e}")
+
+    logger.info(f"=== ИТОГОВАЯ ПРОВЕРКА ===")
+    logger.info(f"Из {total_tasks} задач обработано: {success_count + copied_count + skipped_count}")
+    logger.info(
+        f"Детализация: Скачано из сети: {success_count} | Скопировано локально: {copied_count} | Пропущено (уже было): {skipped_count} | Ошибок: {fail_count}")
+    logger.info(f"Физически на диске сохранено {saved_on_disk} файлов (Скачано + Скопировано).")
+
+    if saved_on_disk < (success_count + copied_count):
+        logger.warning(
+            f"Внимание! Часть файлов ({(success_count + copied_count) - saved_on_disk} шт.) была перезаписана дублями.")
+    else:
+        logger.info("✅ Все уникальные файлы успешно сохранены на диск!")
+
+    logger.info(
+        f"Скачивание завершено. Скачано: {success_count} | Скопировано: {copied_count} | Пропущено: {skipped_count} | Ошибок: {fail_count}")
 
 
 if __name__ == "__main__":

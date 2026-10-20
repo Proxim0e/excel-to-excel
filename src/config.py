@@ -4,34 +4,19 @@ from pathlib import Path
 from typing import Dict, Tuple, List, Optional
 
 # ---------------------------------------------------------------------------
-# Пути 3773
+# Пути
 # ---------------------------------------------------------------------------
 # Используем Path для работы с файловой системой
 BASE_DIR = Path(__file__).resolve().parent.parent
 RESOURCE_DIR = BASE_DIR / "resources"
 TEMPLATE_FILE = RESOURCE_DIR / "sample_model.xlsx"
 
-# ---------------------------------------------------------------------------
-# Web / Scraper Settings
-# ---------------------------------------------------------------------------
-DEFAULT_TENDER_URL: str = "https://achizitii.md/ro/public/tender/21643214"
-BASE: str = "https://achizitii.md"
 
-# Шаблон регулярного выражения для распознавания ссылок на лоты
-LOT_LINK_RE = re.compile(r'/ro/public/tender/\d+/lot/\d+/?$')
-
-HEADERS: Dict[str, str] = {
-    "User-Agent": "Mozilla/5.0 (compatible; scraper/1.0; +https://example.com/bot)"
-}
-
-
-# Режим "Только скачивание". Пропускает создание и запись Excel файлов.
-ONLY_DOWNLOAD: bool = True
 # ---------------------------------------------------------------------------
 # Логика и Пороги
 
-DOWNLOAD_RETRIES = 30 # попытки парсить и грузить
-MAX_WORKERS: int = 3 # потоки
+DOWNLOAD_RETRIES = 300 # попытки парсить и грузить
+MAX_WORKERS: int = 2 # потоки
 # ---------------------------------------------------------------------------
 # Поведение при существующих листах
 APPEND_TO_EXISTING: bool = False
@@ -73,8 +58,22 @@ DOWNLOAD_DIR: Path = BASE_DIR / "downloads"
 # Включить/Выключить скачивание файлов
 # Если False - скрипт создаст только Excel, файлы качаться не будут
 ENABLE_DOWNLOADS: bool = True
-
+# Режим "Только скачивание". Пропускает создание и запись Excel файлов.
+ONLY_DOWNLOAD: bool = False
 # Разрешенные расширения для скачивания.
 # Если оставить список пустым [] - будут качаться ВСЕ файлы (как мы и планировали).
 # Если добавить [".pdf"] - будут качаться только PDF.
 ALLOWED_EXTENSIONS = [".pdf"]
+# ---------------------------------------------------------------------------
+# Web / Scraper Settings
+# ---------------------------------------------------------------------------
+DEFAULT_TENDER_URL: str = "https://achizitii.md/ro/public/tender/21641880"
+BASE: str = "https://achizitii.md"
+
+# Шаблон регулярного выражения для распознавания ссылок на лоты
+LOT_LINK_RE = re.compile(r'/ro/public/tender/\d+/lot/\d+/?$')
+
+HEADERS: Dict[str, str] = {
+    "User-Agent": "Mozilla/5.0 (compatible; scraper/1.0; +https://example.com/bot)"
+}
+
