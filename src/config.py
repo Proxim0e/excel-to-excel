@@ -15,8 +15,8 @@ TEMPLATE_FILE = RESOURCE_DIR / "sample_model.xlsx"
 # ---------------------------------------------------------------------------
 # Логика и Пороги
 
-DOWNLOAD_RETRIES = 300 # попытки парсить и грузить
-MAX_WORKERS: int = 2 # потоки
+DOWNLOAD_RETRIES = 5 # попытки парсить и грузить
+MAX_WORKERS: int = 6 # потоки
 # ---------------------------------------------------------------------------
 # Поведение при существующих листах
 APPEND_TO_EXISTING: bool = False
@@ -67,7 +67,7 @@ ALLOWED_EXTENSIONS = [".pdf"]
 # ---------------------------------------------------------------------------
 # Web / Scraper Settings
 # ---------------------------------------------------------------------------
-DEFAULT_TENDER_URL: str = "https://achizitii.md/ro/public/tender/21641880"
+DEFAULT_TENDER_URL: str = "https://achizitii.md/ro/public/tender/21643235"
 BASE: str = "https://achizitii.md"
 
 # Шаблон регулярного выражения для распознавания ссылок на лоты

@@ -9,7 +9,7 @@ import threading
 import requests
 
 from src.utils.file_helpers import sanitize_filename
-from src.utils.http_client import smart_request
+from src.utils.http_client import smart_request, RateLimitStop, is_blocked, stop_reason
 from src.utils.text_helpers import normalize_spaces, prepare_lot_title_for_b1
 
 from config import (
@@ -34,6 +34,8 @@ logger = logging.getLogger(__name__)
 
 
 def main():
+    # --- ЗАПУСК ОБЩЕГО ТАЙМЕРА СКРИПТА ---
+    script_start_time = time.time()
 
     logger.info("=== Запуск процесса синхронизации лотов ===")
 
@@ -121,6 +123,9 @@ def main():
 
     logger.info("Сбор ссылок на лоты...")
     lot_links = scraper.extract_lot_links(tender_url)
+    if not lot_links:
+        logger.error(f"Ссылки на лоты не найдены. Причина остановки: {stop_reason() or 'не определена'}")
+        return
     logger.info(f"Найдено ссылок: {len(lot_links)}. Начинаю параллельный парсинг...")
 
     results = []
@@ -136,7 +141,9 @@ def main():
                 lot_data = future.result()
                 results.append(lot_data)
                 if lot_data.error:
-                    logger.warning(f"Ошибка обработки {url}: {lot_data.error}")
+                    # При блокировке не засоряем лог сотнями одинаковых строк
+                    if not is_blocked():
+                        logger.warning(f"Ошибка обработки {url}: {lot_data.error}")
                 else:
                     raw_title = lot_data.title if lot_data.title else ""
                     display_title = normalize_spaces(prepare_lot_title_for_b1(raw_title))
@@ -144,6 +151,19 @@ def main():
                     logger.info(f"Обработан   ===   {display_title}   === ---> [{len(lot_data.participants)}] участн.")
             except Exception as e:
                 logger.error(f"Критическая ошибка при обработке {url}: {e}")
+
+    # -----------------------------------------------------
+    # Проверка: не ограничил ли сайт доступ во время парсинга
+    # -----------------------------------------------------
+    if is_blocked():
+        logger.error(f"Парсинг остановлен: {stop_reason()}. Подождите несколько часов и запустите снова.")
+        return
+
+    failed_lots = [r for r in results if r.error]
+    if failed_lots:
+        logger.warning(
+            f"Лотов с ошибками: {len(failed_lots)} из {len(results)}. "
+            f"Их документы не будут скачаны, повторите запуск позже.")
 
         # -----------------------------------------------------
         # 5. Запись участников в Excel (Пропускаем, если ONLY_DOWNLOAD)
@@ -230,7 +250,7 @@ def main():
         # Принудительный выход из скрипта
         exit()
 
-        # Определяем ID тендера и добавляем таймстамп
+        # Определяем ID тендера
     tender_id = "unknown"
     if results:
         import re
@@ -238,10 +258,9 @@ def main():
         if m:
             tender_id = m.group(1)
 
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    # Имя папки: 21487715_2026-01-18_18-30
-    tender_folder_name = f"{tender_id}_{timestamp}"
-    tender_folder = DOWNLOAD_DIR / tender_folder_name
+    # Папка БЕЗ таймстампа: при повторном запуске уже скачанные файлы
+    # находятся на месте и пропускаются (докачка работает).
+    tender_folder = DOWNLOAD_DIR / tender_id
 
     logger.info(f"Подготовка к скачиванию документов в папку: {tender_folder}")
 
@@ -251,6 +270,10 @@ def main():
     # --- Словарь для локального копирования повторяющихся файлов ---
     url_cache = {}
     cache_lock = threading.Lock()
+
+    # Общая сессия для скачивания: соединения переиспользуются, нагрузка на сервер меньше
+    download_session = requests.Session()
+    download_session.headers.update(HEADERS)
 
     # Определяем функцию-воркера для скачивания одного файла
     def download_worker(task_data):
@@ -264,7 +287,7 @@ def main():
         # 1. Проверяем, есть ли файл УЖЕ в нужной папке (докачка с прошлого запуска)
         if file_path.exists():
             logger.info(f"[SKIP] Уже на месте: {file_name}")
-            return "copied"
+            return "skipped"
 
         # 2. Проверяем, скачивали ли мы этот URL ранее в ЭТОТ запуск скрипта?
         with cache_lock:
@@ -280,20 +303,27 @@ def main():
             except Exception as e:
                 logger.warning(f"Не удалось скопировать {file_name}: {e}. Будем качать заново.")
 
+        # Если сайт уже ограничил доступ - в сеть не ходим
+        if is_blocked():
+            return "blocked"
+
         # 3. Если файла нигде нет, скачиваем его с сервера
         try:
             logger.info(f"[START] Скачивание: {file_name} (Лот: {lot_name})")
             response = smart_request(
-                requests.get,
+                download_session.get,
                 url,
-                headers=HEADERS,
                 timeout=60,
                 action_name=f"Download {file_name}"
             )
 
             file_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(file_path, 'wb') as f:
+            # Пишем во временный файл и переименовываем: оборванная запись
+            # не будет принята за готовый файл при следующем запуске.
+            tmp_path = file_path.with_name(file_path.name + ".part")
+            with open(tmp_path, 'wb') as f:
                 f.write(response.content)
+            tmp_path.replace(file_path)
 
             # 4. СОХРАНЯЕМ ПУТЬ В КЭШ, чтобы для других лотов скопировать его
             with cache_lock:
@@ -304,6 +334,8 @@ def main():
                 f"[DOWNLOADED] OK ({file_size_kb} KB) === [{lot_name}] === Part: [{part_name}] === Doc: [{file_name}]")
             return "success"
 
+        except RateLimitStop:
+            return "blocked"
         except requests.exceptions.HTTPError as e:
             logger.error(f"[FAIL-HTTP] {file_name}: {e}")
             return "error"
@@ -382,6 +414,9 @@ def main():
                 # Передаем lot_name и part_name только для логов
                 tasks.append((url, save_path, lot_data.title, part.name, filename))
 
+    # Для пробного запуска на небольшом числе файлов раскомментируйте следующую строку:
+    #tasks = tasks[:20]
+
     # Считаем уникальные ссылки, чтобы понимать, сколько файлов реально качать из сети
     unique_urls = len(set(task[0] for task in tasks))
 
@@ -395,6 +430,7 @@ def main():
     copied_count = 0
     fail_count = 0
     skipped_count = 0
+    blocked_count = 0
     processed_count = 0  # <--- ДОБАВИЛИ СЧЕТЧИК
 
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
@@ -410,9 +446,11 @@ def main():
                 copied_count += 1
             elif result == "skipped":  # <--- ДОБАВИЛИ
                 skipped_count += 1  # <--- Файл уже был на диске, пропустили
+            elif result == "blocked":
+                blocked_count += 1  # <--- Сайт ограничил доступ, файл не обрабатывался
             else:
                 fail_count += 1
-                # <--- ДОБАВЛЕН ЛОГ ПРОГРЕССА КАЖДЫЕ 50 ФАЙЛОВ --->
+                # <--- ЛОГ ПРОГРЕССА КАЖДЫЕ 10 ФАЙЛОВ --->
             if processed_count % 10 == 0 or processed_count == total_tasks:
                 elapsed_time = time.time() - start_download_time
 
@@ -420,20 +458,29 @@ def main():
                 percent = (processed_count / total_tasks) * 100
 
                 # Вычисляем оставшееся время (ETA)
+                speed = 0.0
                 if elapsed_time > 0:
                     speed = processed_count / elapsed_time  # Файлов в секунду
                     remaining_files = total_tasks - processed_count
                     eta_seconds = remaining_files / speed
-
-                    # Форматируем секунды в ЧЧ:ММ:СС
                     eta_formatted = str(timedelta(seconds=int(eta_seconds)))
                 else:
                     eta_formatted = "расчет..."
 
+                # --- НОВЫЕ ТАЙМЕРЫ ---
+                # Время с момента старта всего скрипта
+                total_script_time = time.time() - script_start_time
+                total_script_fmt = str(timedelta(seconds=int(total_script_time)))
+
+                # Время с момента старта скачивания (можно оставить elapsed_time)
+                download_time_fmt = str(timedelta(seconds=int(elapsed_time)))
+
                 logger.info(
                     f"--- ПРОГРЕСС: {processed_count}/{total_tasks} ({percent:.1f}%) | "
                     f"Осталось: ~{eta_formatted} | "
-                    f"Файлов в секунду: ~{speed} | "
+                    f"Скорость: ~{speed:.2f} файл/сек | "
+                    f"Время скачки: {download_time_fmt} | "
+                    f"Общее время: {total_script_fmt} | "
                     f"Успешно: {success_count} | Ошибок: {fail_count} ---"
                 )
     # --- ПРОВЕРКА ФАКТИЧЕСКИХ ФАЙЛОВ НА ДИСКЕ ---
@@ -457,6 +504,11 @@ def main():
 
     logger.info(
         f"Скачивание завершено. Скачано: {success_count} | Скопировано: {copied_count} | Пропущено: {skipped_count} | Ошибок: {fail_count}")
+
+    if is_blocked():
+        logger.error(
+            f"ОСТАНОВЛЕНО: {stop_reason()}. Не обработано: {blocked_count}. "
+            f"Запустите позже, скачанное пропустится.")
 
 
 if __name__ == "__main__":

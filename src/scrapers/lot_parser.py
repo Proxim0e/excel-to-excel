@@ -1,6 +1,6 @@
 from urllib.parse import urljoin
 from typing import List, Optional, Dict
-from src.utils.http_client import smart_request
+from src.utils.http_client import smart_request, RateLimitStop
 import requests
 from bs4 import BeautifulSoup
 from src.utils.text_helpers import clean_company_name, parse_price_to_number, normalize_spaces
@@ -22,7 +22,7 @@ class TenderScraper:
     def __init__(self):
         # Инициализируем сессию для переиспользования TCP-соединений
         self.session = requests.Session()
-        # Увеличиваем пул соединений, чтобы 16 воркеров не ждали
+        # Пул соединений под число воркеров, чтобы они не ждали друг друга
         adapter = requests.adapters.HTTPAdapter(pool_connections=MAX_WORKERS, pool_maxsize=MAX_WORKERS)
         self.session.mount('https://', adapter)
         self.session.mount('http://', adapter)
@@ -30,13 +30,17 @@ class TenderScraper:
         self.session.headers.update(HEADERS)
 
     def get_soup(self, url: str, timeout: int = 20) -> Optional[BeautifulSoup]:
-        """Загружает страницу и возвращает объект BeautifulSoup."""
+        """
+        Загружает страницу через общий "вежливый" клиент (лимит частоты, остановка при блокировке)
+        и возвращает объект BeautifulSoup. При любой ошибке возвращает None.
+        """
         try:
-            resp = self.session.get(url, timeout=timeout)
-            resp.raise_for_status()
+            resp = smart_request(self.session.get, url, timeout=timeout, action_name="Page")
             return BeautifulSoup(resp.text, "html.parser")
         except Exception as e:
-            print(f"[ERROR] Ошибка загрузки {url}: {e}")
+            # Сюда попадает и RateLimitStop: вызывающий код получит None,
+            # а main.py проверит is_blocked() и остановится с понятным сообщением.
+            logger.error(f"Ошибка загрузки {url}: {e}")
             return None
 
     def extract_lot_links(self, tender_url: str) -> List[str]:
@@ -164,6 +168,10 @@ class TenderScraper:
                 title=title,
                 participants=participants
             )
+
+        except RateLimitStop:
+            # Сайт ограничил доступ: оставшиеся лоты отдаём с пометкой, без шума в логе.
+            return LotData(number=0, url=lot_url, error="остановлено: сайт ограничил доступ")
 
         except requests.exceptions.HTTPError as e:
             # smart_request выдал эту ошибку (404 или ретраи кончились)
