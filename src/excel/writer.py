@@ -20,7 +20,8 @@ from src.utils.text_helpers import prepare_lot_title_for_b1, normalize_spaces
 from src.excel.styles import (
     NOT_HELD_FILL, NOT_HELD_FONT, NOT_HELD_ALIGNMENT,
     HIGH_PERCENT_FILL, HIGH_PERCENT_FONT, HIGH_PERCENT_ALIGNMENT,
-    HEADER_FONT_BOLD
+    HEADER_FONT_BOLD,
+    NOT_SCRAPED_TEXT, NOT_SCRAPED_TAB_COLOR, NOT_SCRAPED_FILL, NOT_SCRAPED_FONT,
 )
 
 
@@ -237,7 +238,21 @@ class ExcelManager:
             logger.info(
                 f"[EXCEL] Лот {lot_data.number}: все участники >={int(PERCENT_THRESHOLD * 100)}% -> вкладка помечена красным")
 
-    def save(self, output_path: str):
-        """Сохраняет книгу по указанному пути"""
+    def mark_not_scraped(self, lot_number: int) -> None:
+        """
+        Помечает лист лота, по которому нет данных с сайта.
+        Листы, которые мы не имеем права менять (APPEND_TO_EXISTING), не трогаем.
+        """
+        ws = self.lot_sheets.get(lot_number)
+        if ws is None or (not APPEND_TO_EXISTING and lot_number <= self.max_existing):
+            return
+        ws["E11"] = NOT_SCRAPED_TEXT
+        ws["E11"].fill = NOT_SCRAPED_FILL
+        ws["E11"].font = NOT_SCRAPED_FONT
+        ws["E11"].alignment = NOT_HELD_ALIGNMENT
+        ws.sheet_properties.tabColor = NOT_SCRAPED_TAB_COLOR
+        logger.warning(f"[EXCEL] Лот {lot_number}: нет данных с сайта, лист помечен серым.")
+
+    def save(self, output_path) -> None:
+        """Сохраняет книгу по указанному пути (str или Path)."""
         self.wb.save(output_path)
-        print(f"[EXCEL] File saved to {output_path}")

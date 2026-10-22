@@ -17,6 +17,15 @@ HIGH_PERCENT_FONT = Font(color="000000", bold=True)
 HIGH_PERCENT_ALIGNMENT = Alignment(horizontal="center", vertical="center")
 
 # ---------------------------------------------------------------------------
+# Стили для лота, по которому нет данных с сайта (ошибка парсинга / блокировка)
+# Серая заливка: визуально отличается от "Achiziţia nu a avut loc"
+# ---------------------------------------------------------------------------
+NOT_SCRAPED_TEXT = "NU S-A PARSAT: date lipsă de pe site"
+NOT_SCRAPED_TAB_COLOR = "808080"
+NOT_SCRAPED_FILL = PatternFill(start_color="BFBFBF", end_color="BFBFBF", fill_type="solid")
+NOT_SCRAPED_FONT = Font(color="000000", bold=True)
+
+# ---------------------------------------------------------------------------
 # Общие стили
 # ---------------------------------------------------------------------------
 HEADER_FONT_BOLD = Font(bold=True)

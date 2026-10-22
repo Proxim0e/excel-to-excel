@@ -1,17 +1,21 @@
+import logging
+import re
+from typing import List, Optional
 from urllib.parse import urljoin
-from typing import List, Optional, Dict
-from src.utils.http_client import smart_request, RateLimitStop
+
 import requests
 from bs4 import BeautifulSoup
-from src.utils.text_helpers import clean_company_name, parse_price_to_number, normalize_spaces
-import logging
-logging.basicConfig(level=logging.DEBUG,
-                    format='%(asctime)s [%(levelname)s] %(message)s')
-logger = logging.getLogger(__name__)
 
 from src.config import HEADERS, BASE, LOT_LINK_RE, MAX_WORKERS
 from src.models import LotData, Participant
-from src.utils.text_helpers import clean_company_name, parse_price_to_number
+from src.utils.http_client import smart_request, RateLimitStop
+from src.utils.text_helpers import clean_company_name, parse_price_to_number, normalize_spaces
+
+# Логирование настраивает только точка входа (src/main.py), не библиотечный модуль.
+logger = logging.getLogger(__name__)
+
+_LOT_NUMBER_RE = re.compile(r'Lot(?:ul)?\s*nr\.?\s*(\d+)', re.I)
+
 
 class TenderScraper:
     """
@@ -89,8 +93,7 @@ class TenderScraper:
 
             # Если ссылка относительная (начинается с /), делаем полной
             if href.startswith("/"):
-                from urllib.parse import urljoin
-                href = urljoin("https://achizitii.md", href)
+                href = urljoin(BASE, href)
 
             docs.append((filename, href))
 
@@ -125,13 +128,8 @@ class TenderScraper:
                 title = normalize_spaces(mt.get_text(strip=True)) if mt else "(untitled)"
 
             # 2. Извлекаем номер лота из title
-            lot_number = 0
-
-            if lot_number == 0:
-                import re
-                m = re.search(r'Lot(?:ul)?\s*nr\.?\s*(\d+)', title, flags=re.I)
-                if m:
-                    lot_number = int(m.group(1))
+            m = _LOT_NUMBER_RE.search(title)
+            lot_number = int(m.group(1)) if m else 0  # 0 -> main попробует сопоставить по названию
             logger.debug(f"Определен номер лота: {lot_number}")
 
             # 3. Извлекаем участников
