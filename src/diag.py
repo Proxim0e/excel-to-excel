@@ -30,10 +30,7 @@ from urllib.parse import urlparse
 import requests
 
 from src.config import DEFAULT_TENDER_URL, HEADERS
-from src.utils.http_client import describe_network_error
-
-BROWSER_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-              "(KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36")
+from src.utils.http_client import BROWSER_UA, DOWNLOAD_HEADERS, describe_network_error
 
 PROXY_VARS = ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
               "http_proxy", "https_proxy", "all_proxy", "no_proxy")
@@ -165,7 +162,7 @@ def probe_host(rep: HostReport, *, resolver=socket.getaddrinfo, connector=socket
     url = rep.urls[0]
     rep.ok, rep.http = _try_get(get, url, HEADERS, timeout)
     if not rep.ok:
-        rep.ok_browser, rep.http_browser = _try_get(get, url, {"User-Agent": BROWSER_UA}, timeout)
+        rep.ok_browser, rep.http_browser = _try_get(get, url, DOWNLOAD_HEADERS, timeout)
         ok_curl, rep.curl = (curl_runner or _run_curl)(url)
         rep.ok_curl = ok_curl
     return rep

@@ -28,6 +28,17 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Настройки "вежливого" режима
 # ---------------------------------------------------------------------------
+# Хранилище файлов storage.mtender.gov.md сбрасывает соединение (10054) на запросы со
+# «скриптовым» User-Agent (проверено 28.10.2026: curl и requests режутся, браузерный UA проходит).
+# Поэтому для СКАЧИВАНИЯ файлов используется браузерный заголовок. Вежливые лимиты частоты остаются.
+BROWSER_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+              "(KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36")
+DOWNLOAD_HEADERS = {
+    "User-Agent": BROWSER_UA,
+    "Accept": "application/pdf,application/octet-stream;q=0.9,*/*;q=0.8",
+    "Accept-Language": "ro-RO,ro;q=0.9,en;q=0.8",
+}
+
 MIN_DELAY = 1.5                # минимум секунд между ЛЮБЫМИ двумя запросами (общий для потоков)
 JITTER = 0.6                   # случайная добавка к паузе, сек
 MAX_RETRIES_CAP = 5            # потолок попыток на один запрос
@@ -48,6 +59,15 @@ _trouble = 0
 
 class RateLimitStop(Exception):
     """Сайт ограничил доступ (или идут сплошные сбои): все потоки должны остановиться."""
+
+
+def make_download_session() -> requests.Session:
+    """Сессия для скачивания файлов: общие HEADERS проекта + браузерные заголовки."""
+    from src.config import HEADERS
+    session = requests.Session()
+    session.headers.update(HEADERS)
+    session.headers.update(DOWNLOAD_HEADERS)
+    return session
 
 
 def describe_network_error(exc: BaseException, url: str = "") -> str:

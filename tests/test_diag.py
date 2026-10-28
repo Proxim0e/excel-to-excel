@@ -33,6 +33,21 @@ class DescribeNetworkErrorTests(unittest.TestCase):
         self.assertIn("x.md", out)
 
 
+class DownloadSessionTests(unittest.TestCase):
+    def test_session_has_browser_user_agent(self):
+        s = http_client.make_download_session()
+        ua = s.headers["User-Agent"]
+        self.assertIn("Mozilla/5.0", ua)
+        self.assertNotIn("scraper", ua)
+        self.assertIn("pdf", s.headers["Accept"])
+
+    def test_session_keeps_project_headers_not_overridden(self):
+        from src.config import HEADERS
+        s = http_client.make_download_session()
+        for k in HEADERS:
+            self.assertIn(k, s.headers)
+
+
 class StopAdviceTests(unittest.TestCase):
     def test_network_vs_site_limits(self):
         self.assertTrue(http_client._is_network_reason("4 сбоев подряд, последний: ConnectionError: DNS"))

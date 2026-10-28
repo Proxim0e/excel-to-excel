@@ -9,7 +9,8 @@ import threading
 import requests
 
 from src.utils.file_helpers import sanitize_filename
-from src.utils.http_client import smart_request, RateLimitStop, is_blocked, stop_reason
+from src.utils.http_client import (smart_request, RateLimitStop, is_blocked, stop_reason,
+                                   make_download_session)
 from src.utils.text_helpers import normalize_spaces, prepare_lot_title_for_b1
 
 from config import (
@@ -272,8 +273,7 @@ def main():
     cache_lock = threading.Lock()
 
     # Общая сессия для скачивания: соединения переиспользуются, нагрузка на сервер меньше
-    download_session = requests.Session()
-    download_session.headers.update(HEADERS)
+    download_session = make_download_session()
 
     # Определяем функцию-воркера для скачивания одного файла
     def download_worker(task_data):
