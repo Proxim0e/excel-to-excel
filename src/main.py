@@ -481,7 +481,7 @@ def main():
                     f"Скорость: ~{speed:.2f} файл/сек | "
                     f"Время скачки: {download_time_fmt} | "
                     f"Общее время: {total_script_fmt} | "
-                    f"Успешно: {success_count} | Ошибок: {fail_count} ---"
+                    f"Успешно: {success_count} | Ошибок: {fail_count} | Не тронуто из-за остановки: {blocked_count} ---"
                 )
     # --- ПРОВЕРКА ФАКТИЧЕСКИХ ФАЙЛОВ НА ДИСКЕ ---
     saved_on_disk = 0
@@ -495,6 +495,11 @@ def main():
     logger.info(
         f"Детализация: Скачано из сети: {success_count} | Скопировано локально: {copied_count} | Пропущено (уже было): {skipped_count} | Ошибок: {fail_count}")
     logger.info(f"Физически на диске сохранено {saved_on_disk} файлов (Скачано + Скопировано).")
+    if blocked_count:
+        logger.error(
+            f"Скачивание остановлено: {blocked_count} из {total_tasks} файлов НЕ обрабатывались "
+            f"(причина: {stop_reason() or 'не указана'}). Это не «обработано», а пропущено."
+        )
 
     if saved_on_disk < (success_count + copied_count):
         logger.warning(

@@ -17,6 +17,8 @@ import random
 import logging
 import threading
 
+from urllib.parse import urlparse
+
 import requests
 
 from src.config import DOWNLOAD_RETRIES
@@ -48,6 +50,34 @@ class RateLimitStop(Exception):
     """Сайт ограничил доступ (или идут сплошные сбои): все потоки должны остановиться."""
 
 
+def describe_network_error(exc: BaseException, url: str = "") -> str:
+    """
+    Короткое объяснение сетевого сбоя: хост + причина по тексту исключения.
+    Нужно, чтобы в логе было видно, ЧТО именно сломалось (DNS, отказ, SSL, таймаут, прокси),
+    а не только имя класса исключения.
+    """
+    host = urlparse(url).netloc or "?"
+    text = str(exc)
+    low = text.lower()
+    if isinstance(exc, requests.exceptions.SSLError) or "ssl" in low or "certificate" in low:
+        cause = "ошибка SSL/сертификата (антивирус с проверкой HTTPS, неверные дата/время, прокси)"
+    elif "proxy" in low:
+        cause = "проблема с прокси"
+    elif any(m in low for m in ("getaddrinfo", "name or service not known", "nodename nor servname",
+                                "temporary failure in name resolution", "11001", "11004")):
+        cause = "не разрешается имя хоста (DNS)"
+    elif any(m in low for m in ("refused", "10061", "errno 111")):
+        cause = "соединение отклонено хостом (порт закрыт или блокировка)"
+    elif isinstance(exc, requests.exceptions.Timeout) or "timed out" in low or "10060" in low:
+        cause = "таймаут соединения (блокировка по IP, файрвол, нет маршрута)"
+    elif any(m in low for m in ("reset", "10054", "aborted", "10053", "remote end closed", "connection broken")):
+        cause = "соединение сброшено при установке (фильтрация провайдером, антивирус, VPN)"
+    else:
+        cause = "сетевой сбой"
+    tail = text.replace("\n", " ")[:200]
+    return f"{type(exc).__name__}: {cause}; хост {host}; {tail}"
+
+
 def is_blocked() -> bool:
     return _stop_event.is_set()
 
@@ -63,10 +93,15 @@ def _trigger_stop(reason: str) -> None:
             return
         _stop_reason = reason
         _stop_event.set()
-    logger.error(
-        "=== ОСТАНОВКА: %s. Все потоки прекращают запросы. "
-        "Подождите несколько часов и запустите снова. ===", reason
-    )
+    advice = ("Проверьте сеть, DNS, VPN и антивирус; запустите `python -m src.diag`."
+              if _is_network_reason(reason)
+              else "Подождите несколько часов и запустите снова.")
+    logger.error("=== ОСТАНОВКА: %s. Все потоки прекращают запросы. %s ===", reason, advice)
+
+
+def _is_network_reason(reason: str) -> bool:
+    """Остановка из-за сети (а не из-за ограничений сайта 403/429/503)."""
+    return not any(m in reason for m in ("HTTP 403", "HTTP 429", "HTTP 503"))
 
 
 def _raise_if_stopped() -> None:
@@ -126,8 +161,9 @@ def smart_request(request_func, url, retries=DOWNLOAD_RETRIES, timeout=30,
         try:
             resp = request_func(url, timeout=timeout, **kwargs)
         except requests.exceptions.RequestException as e:
-            logger.warning(f"[{action_name}] Сбой сети: {type(e).__name__}. Попытка {attempt}/{retries}")
-            _note_trouble(type(e).__name__)
+            details = describe_network_error(e, url)
+            logger.warning(f"[{action_name}] Сбой сети: {details}. Попытка {attempt}/{retries}")
+            _note_trouble(details)
             if attempt == retries:
                 raise requests.exceptions.HTTPError(f"Retries exhausted: {url}") from e
             time.sleep(BACKOFF_BASE * attempt)
