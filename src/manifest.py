@@ -6,7 +6,7 @@ document_refs  - каждое место, где файл лежит в тенд
 
 Пишется из download_worker при любом исходе задачи (скачан, скопирован, уже был на диске),
 поэтому повторный запуск по уже скачанному тендеру просто заполняет манифест.
-Тип документа (Anexa 22/23, ISO...) заполняет следующий шаг - классификатор.
+Тип документа (Anexa 22/23, ISO...) и текст страниц (document_pages) заполняет src/classify.py.
 """
 import hashlib
 import sqlite3
@@ -43,7 +43,31 @@ CREATE TABLE IF NOT EXISTS document_refs (
 );
 CREATE INDEX IF NOT EXISTS idx_refs_sha ON document_refs(sha256);
 CREATE INDEX IF NOT EXISTS idx_refs_lot ON document_refs(tender_id, lot_no);
+CREATE TABLE IF NOT EXISTS document_pages (
+    sha256  TEXT NOT NULL REFERENCES documents(sha256),
+    page_no INTEGER NOT NULL,
+    text    TEXT NOT NULL,
+    PRIMARY KEY (sha256, page_no)
+);
 """
+
+# Колонки, добавленные после первой версии схемы: (таблица, колонка, тип)
+MIGRATIONS = [
+    ("documents", "type_rule", "TEXT"),
+    ("documents", "classified_at", "TEXT"),
+    ("documents", "contains", "TEXT"),        # типы разделов внутри PDF-«пачки», через запятую
+    ("document_pages", "page_type", "TEXT"),
+]
+
+
+def migrate(conn: sqlite3.Connection) -> None:
+    """Создаёт таблицы и добавляет недостающие колонки в манифесты старых версий."""
+    conn.executescript(SCHEMA)
+    for table, column, sql_type in MIGRATIONS:
+        existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+        if column not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {sql_type}")
+    conn.commit()
 
 
 def file_sha256(path: Path) -> str:
@@ -62,7 +86,7 @@ class Manifest:
         self._lock = threading.Lock()
         self._conn = sqlite3.connect(self.db_path, check_same_thread=False)
         self._conn.execute("PRAGMA journal_mode=WAL")
-        self._conn.executescript(SCHEMA)
+        migrate(self._conn)
         self._pending = 0
         # Ссылка -> хеш: копии одного файла не хешируем повторно
         self._sha_by_url = {}

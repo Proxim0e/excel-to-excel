@@ -533,8 +533,9 @@ def main():
     # --- ПРОВЕРКА ФАКТИЧЕСКИХ ФАЙЛОВ НА ДИСКЕ ---
     saved_on_disk = 0
     try:
+        # Документы лежат в папках лот/участник; в корне тендера - служебные файлы (манифест, таблица проверки)
         saved_on_disk = sum(1 for x in tender_folder.rglob('*')
-                            if x.is_file() and not x.name.startswith(MANIFEST_NAME))
+                            if x.is_file() and x.parent != tender_folder)
     except Exception as e:
         logger.warning(f"Не удалось посчитать файлы на диске: {e}")
 
@@ -563,6 +564,35 @@ def main():
     logger.info(
         f"Манифест: {m['refs']} файлов в лотах, {m['documents']} уникальных по содержимому, "
         f"без файла на диске: {m['missing']} -> {tender_folder / MANIFEST_NAME}")
+
+    classify_downloads(tender_folder)
+
+
+def classify_downloads(tender_folder):
+    """
+    Классификация уникальных документов тендера (этап 1).
+    Сначала применяются исправления человека из прошлой таблицы проверки, чтобы их не затереть,
+    затем классифицируются новые документы и выгружается свежая таблица.
+    """
+    try:
+        from src.classify import apply_review, classify_tender, export_review, type_summary, REVIEW_NAME
+        review = tender_folder / REVIEW_NAME
+        if review.exists():
+            applied, errors = apply_review(tender_folder)
+            logger.info(f"[CLASSIFY] Исправлений из {REVIEW_NAME} применено: {applied}")
+            for e in errors:
+                logger.warning(f"[CLASSIFY] {e}")
+        counts = classify_tender(tender_folder)
+        logger.info(f"[CLASSIFY] Новых документов классифицировано: {sum(counts.values())}")
+        summary = ", ".join(f"{t}: {docs}" for t, docs, _ in type_summary(tender_folder))
+        logger.info(f"[CLASSIFY] Уникальные документы по типам: {summary}")
+        logger.info(f"[CLASSIFY] Таблица для проверки: {export_review(tender_folder)}")
+    except ImportError as e:
+        logger.warning(f"[CLASSIFY] Классификация пропущена: нет библиотеки ({e}). Установите PyMuPDF.")
+    except PermissionError:
+        logger.warning(f"[CLASSIFY] Не удалось обновить таблицу проверки: файл открыт в Excel?")
+    except Exception as e:
+        logger.error(f"[CLASSIFY] Ошибка классификации: {type(e).__name__} - {e}")
 
     if is_blocked():
         logger.error(
