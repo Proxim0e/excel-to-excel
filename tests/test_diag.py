@@ -67,22 +67,57 @@ class ProbeHostTests(unittest.TestCase):
         self.assertTrue(r.tcp.startswith("FAIL"))
         self.assertIn("TCP", r.verdict())
 
-    def test_http_failure_is_explained(self):
-        res = lambda *a, **k: [(0, 0, 0, "", ("1.2.3.4", 443))]
-        conn = mock.Mock(return_value=mock.Mock(close=lambda: None))
-        def get(*a, **k):
-            raise requests.exceptions.ConnectionError("Connection aborted, ConnectionResetError(10054)")
-        r = diag.probe_host(self.rep(), resolver=res, connector=conn, getter=get)
+    RES = staticmethod(lambda *a, **k: [(0, 0, 0, "", ("1.2.3.4", 443))])
+
+    def conn(self):
+        return mock.Mock(return_value=mock.Mock(close=lambda: None))
+
+    def test_tls_reset_is_reported_as_tls(self):
+        def bad_tls(*a, **k):
+            raise ConnectionResetError(10054, "reset")
+        r = diag.probe_host(self.rep(), resolver=self.RES, connector=self.conn(), tls_checker=bad_tls)
+        self.assertTrue(r.tls.startswith("FAIL"))
+        self.assertIn("TLS", r.verdict())
+        self.assertEqual(r.http, "")
+
+    def _resp(self, code=200):
+        resp = mock.Mock(status_code=code, headers={"Content-Type": "application/pdf"})
+        resp.iter_content = lambda n: iter([b"%PDF"])
+        return resp
+
+    def test_scraper_user_agent_rejected_browser_passes(self):
+        def get(url, headers=None, **k):
+            if "scraper" in headers.get("User-Agent", ""):
+                raise requests.exceptions.ConnectionError("ConnectionResetError(10054)")
+            return self._resp()
+        r = diag.probe_host(self.rep(), resolver=self.RES, connector=self.conn(), getter=get,
+                            tls_checker=lambda *a: "TLSv1.3", curl_runner=lambda u: (False, "x"))
         self.assertFalse(r.ok)
+        self.assertTrue(r.ok_browser)
+        self.assertIn("User-Agent", r.verdict())
+
+    def test_curl_ok_python_fails(self):
+        def get(*a, **k):
+            raise requests.exceptions.ConnectionError("ConnectionResetError(10054)")
+        r = diag.probe_host(self.rep(), resolver=self.RES, connector=self.conn(), getter=get,
+                            tls_checker=lambda *a: "TLSv1.3", curl_runner=lambda u: (True, "HTTP/2 200"))
+        self.assertIn("curl", r.verdict())
+
+    def test_everything_fails_after_tls(self):
+        def get(*a, **k):
+            raise requests.exceptions.ConnectionError("ConnectionResetError(10054)")
+        r = diag.probe_host(self.rep(), resolver=self.RES, connector=self.conn(), getter=get,
+                            tls_checker=lambda *a: "TLSv1.3", curl_runner=lambda u: (False, "FAIL"))
+        self.assertIn("блокировка", r.verdict())
         self.assertIn("сброшено", r.http)
-        self.assertIn("HTTPS", r.verdict())
 
     def test_success(self):
         res = lambda *a, **k: [(0, 0, 0, "", ("1.2.3.4", 443))]
         conn = mock.Mock(return_value=mock.Mock(close=lambda: None))
         resp = mock.Mock(status_code=200, headers={"Content-Type": "application/pdf"})
         resp.iter_content = lambda n: iter([b"%PDF"])
-        r = diag.probe_host(self.rep(), resolver=res, connector=conn, getter=lambda *a, **k: resp)
+        r = diag.probe_host(self.rep(), resolver=res, connector=conn, getter=lambda *a, **k: resp,
+                            tls_checker=lambda *a: "TLSv1.3")
         self.assertTrue(r.ok)
         self.assertEqual(r.verdict(), "OK")
 
