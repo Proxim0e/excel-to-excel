@@ -9,9 +9,12 @@
 то же «70 mm» может относиться к соседнему товару.
 
 Результат в формате человека: // "цитата" "цитата", p[3], имя документа
+Итог для ячейки: нет технических документов - «//docs» и жёлтый; не найден код модели или параметр -
+«// <параметр>; ...» и жёлтый; всё найдено - зелёный; проверять нечего - светло-зелёный.
 """
 import re
 import sqlite3
+import unicodedata
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
@@ -41,11 +44,18 @@ def model_tokens(model: str) -> List[str]:
     return list(dict.fromkeys(t for t in tokens if re.search(r"\d", t) and len(re.sub(r"\W", "", t)) >= 4))
 
 
+TOLERANCE_RE = re.compile(r"(\+\s*/?\s*-|±|\+-)\s*$")
+
+
 def spec_values(spec: str) -> List[Tuple[str, str]]:
-    """Числа с единицами из спецификации: [("70", "mm"), ("500", "ml")]."""
+    """Числа с единицами из спецификации: [("70", "mm"), ("500", "ml")]. Допуски («±5mm», «+-5mm»)
+    - не параметры, а часть предыдущего значения, их не ищем."""
+    text = normalize(spec)
     values = []
-    for num, unit in VALUE_RE.findall(normalize(spec)):
-        v = (num.replace(",", "."), unit)
+    for m in VALUE_RE.finditer(text):
+        if TOLERANCE_RE.search(text[max(0, m.start() - 4):m.start()]):
+            continue
+        v = (m.group(1).replace(",", "."), m.group(2))
         if v not in values:
             values.append(v)
     return values[:MAX_VALUES]
@@ -70,28 +80,108 @@ def _value_rx(num: str, unit: str):
     return re.compile(rf"(?<![\d.,])(?:{alt})\s?{re.escape(unit)}(?![a-z])")
 
 
-def find_evidence(conn: sqlite3.Connection, participant: str, lot: int, model: str, spec: str) -> List[Evidence]:
-    # Технические страницы: документ технического типа или страница технического типа внутри
-    # «пачки» (даташиты после Anexa 22 в одном PDF). Страницы, из которых разобрана сама таблица
-    # Anexa 22, исключаются - иначе Anexa 22 «подтверждала» бы сама себя.
+# Итог уровня 2 для ячейки строки 11 (цвета - как в Excel Ivan, кодбук концепта)
+GREEN, LIGHT_GREEN, YELLOW = "green", "light_green", "yellow"
+NO_DOCS_MARK = "//docs"
+MAX_MISSING = 6
+MISSING_CHARS = 45
+
+
+@dataclass
+class OfferCheck:
+    status: str                                   # GREEN / LIGHT_GREEN / YELLOW
+    evidence: List[Evidence] = field(default_factory=list)
+    missing: List[str] = field(default_factory=list)  # что не найдено: «model F4141», «Lungime: ≥ 15 cm»
+    has_docs: bool = True
+
+    def note(self) -> str:
+        """Что дописать в строку 11 после спецификации."""
+        if not self.has_docs:
+            return NO_DOCS_MARK
+        parts = [format_evidence(self.evidence)] if self.evidence else []
+        if self.missing:
+            parts.append("// " + "; ".join(self.missing[:MAX_MISSING]))
+        return "\n".join(parts)
+
+
+def tech_pages(conn: sqlite3.Connection, participant: str, lot: Optional[int]):
+    """Технические страницы участника по лоту (lot=None - по всем лотам): документ технического типа
+    или страница технического типа внутри «пачки» (даташиты после Anexa 22 в одном PDF). Страницы,
+    из которых разобрана сама таблица Anexa 22, исключаются - иначе Anexa 22 «подтверждала» бы сама себя."""
     placeholders = ",".join("?" * len(TECH_TYPES))
-    pages = conn.execute(f"""
+    lot_filter = "AND r.lot_no = ?" if lot is not None else ""
+    params = (participant, *([lot] if lot is not None else []), *TECH_TYPES, *TECH_TYPES)
+    return conn.execute(f"""
         SELECT d.sha256, MIN(r.original_name), p.page_no, p.text
         FROM document_refs r JOIN documents d USING (sha256) JOIN document_pages p USING (sha256)
-        WHERE r.participant = ? AND r.lot_no = ?
+        WHERE r.participant = ? {lot_filter}
           AND (d.doc_type IN ({placeholders}) OR p.page_type IN ({placeholders}))
           AND COALESCE(p.page_type, '') NOT IN ('anexa22', 'anexa23')
           AND NOT EXISTS (SELECT 1 FROM anexa22_offers o WHERE o.sha256 = p.sha256 AND o.page_no = p.page_no)
-        GROUP BY d.sha256, p.page_no ORDER BY MIN(r.original_name), p.page_no""",
-                         (participant, lot, *TECH_TYPES, *TECH_TYPES)).fetchall()
-    if not pages:
-        return []
+        GROUP BY d.sha256, p.page_no ORDER BY MIN(r.original_name), p.page_no""", params).fetchall()
 
+
+def _fold(text: str) -> str:
+    """Нижний регистр без диакритики, длина как у исходного текста (для вырезания фрагментов)."""
+    folded = "".join(c for c in unicodedata.normalize("NFKD", text) if not unicodedata.combining(c)).lower()
+    return folded if len(folded) == len(text) else text.lower()
+
+
+def parameter_label(spec: str, num: str, unit: str) -> str:
+    """Параметр, к которому относится значение: «4. Lungime: ≥ 15 cm 5. ...» -> «Lungime: ≥ 15 cm»."""
+    m = _value_rx(num, unit).search(_fold(spec))
+    if not m:
+        return f"{num} {unit}"
+    start = 0
+    for sep in re.finditer(r"[\n;,]|(?<!\d)\d{1,2}\.\s*(?=[^\d\s])", spec[:m.start()]):
+        start = sep.end()
+    label = re.sub(r"\s+", " ", spec[start:m.end()]).strip(" -:")
+    # Несколько параметров без разделителей: «Lavabilă la temperatura: 60° C Manometru: Ø 49mm» -
+    # берём последнюю пару «название: значение»
+    # (название - до трёх слов из букв, от 2 символов: не захватываем «60° C» от предыдущего значения)
+    pair = re.search(r"((?:[^\W\d_]{2,}\s+){0,2}[^\W\d_]{2,}\s*:[^:]*)$", label)
+    if pair and pair.start() > 0:
+        label = pair.group(1)
+    return label if len(label) <= MISSING_CHARS else "…" + label[-MISSING_CHARS:]
+
+
+def check_offer(conn: sqlite3.Connection, participant: str, lot: int, model: str, spec: str) -> OfferCheck:
+    """Уровень 2: код модели и параметры из Anexa 22 в технических документах участника по лоту.
+    Брошюру часто прикладывают к одному лоту, а ссылаются на неё в нескольких: если в папке лота
+    код модели не найден, ищем в технических документах участника из других лотов."""
     codes = model_tokens(model)
+    values = spec_values(spec)
+    pages = tech_pages(conn, participant, lot)
+    evidence = _search(pages, codes, values) if pages else []
+    found = {f for ev in evidence for f in ev.found}
+    if codes and not any(c in found for c in codes):
+        wider = [p for p in tech_pages(conn, participant, None)
+                 if any(_alnum(c) in _alnum(p[3]) for c in codes)]
+        if wider:
+            evidence = _search(wider, codes, values)
+            found = {f for ev in evidence for f in ev.found}
+    if not evidence:
+        return OfferCheck(YELLOW, has_docs=False)
+    missing = [f"model {c}" for c in codes if c not in found]
+    missing += list(dict.fromkeys(parameter_label(spec, num, unit) for num, unit in values
+                                  if f"{num} {unit}" not in found))
+    if missing:
+        status = YELLOW
+    elif codes or values:
+        status = GREEN
+    else:
+        status = LIGHT_GREEN  # проверять нечего - соответствие только декларативное
+    return OfferCheck(status, evidence[:MAX_PAGES], missing)
+
+
+def find_evidence(conn: sqlite3.Connection, participant: str, lot: int, model: str, spec: str) -> List[Evidence]:
+    return check_offer(conn, participant, lot, model, spec).evidence
+
+
+def _search(pages, codes: List[str], values: List[Tuple[str, str]]) -> List[Evidence]:
     with_model = [(sha, name, pno, text) for sha, name, pno, text in pages
                   if any(_alnum(c) in _alnum(text) for c in codes)]
     candidates = with_model or pages
-    values = spec_values(spec)
 
     results: Dict[Tuple[str, int], Evidence] = {}
     for sha, name, pno, text in candidates:
@@ -113,8 +203,8 @@ def find_evidence(conn: sqlite3.Connection, participant: str, lot: int, model: s
         if ev.found:
             ev.quotes = ev.quotes[:MAX_QUOTES]
             results[(sha, pno)] = ev
-    # Самые содержательные страницы - первыми
-    return sorted(results.values(), key=lambda e: -len(e.found))[:MAX_PAGES]
+    # Самые содержательные страницы - первыми (все - для подсчёта найденного, в ячейку - MAX_PAGES)
+    return sorted(results.values(), key=lambda e: -len(e.found))
 
 
 def format_evidence(items: List[Evidence]) -> str:

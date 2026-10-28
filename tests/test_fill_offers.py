@@ -19,10 +19,16 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual(ev.model_tokens("Masca adult"), [])
 
     def test_spec_values(self):
-        values = ev.spec_values("lungime 70 mm (+-5mm), Ø 49mm, 0~300mm Hg, 500 ml, 3m, 1,5 ml")
-        self.assertEqual(values[:6], [("70", "mm"), ("5", "mm"), ("49", "mm"), ("300", "mm"), ("500", "ml"),
-                                      ("3", "m")])
-        self.assertIn(("1.5", "ml"), values)
+        values = ev.spec_values("lungime 70 mm (+-5mm), Ø 49mm, 0~300mm Hg, 500 ml, 3m, 1,5 ml, 10 cm ± 2 cm")
+        # допуски «+-5mm», «± 2 cm» - не параметры
+        self.assertEqual(values, [("70", "mm"), ("49", "mm"), ("300", "mm"), ("500", "ml"), ("3", "m"),
+                                  ("1.5", "ml"), ("10", "cm")])
+
+    def test_parameter_label(self):
+        spec = "3. Tip tub: Smoothbore 4. Lungime: ≥ 15 cm 5. Funcționalitate: Swivel"
+        self.assertEqual(ev.parameter_label(spec, "15", "cm"), "Lungime: ≥ 15 cm")
+        spec = "Lavabilă la temperatura: 60° C Manometru: Ø 49mm, 0~300mm Hg"
+        self.assertEqual(ev.parameter_label(spec, "49", "mm"), "Manometru: Ø 49mm")
 
     def test_format(self):
         items = [ev.Evidence("catalog.pdf", 3, ['49 mm diameter', 'No. 5270'])]
@@ -84,6 +90,47 @@ class FillTests(unittest.TestCase):
         stats = fo.fill_result(self.xlsx, self.root)
         self.assertEqual((stats["row3"], stats["row11"]), (0, 0))
         self.assertEqual(load_workbook(self.xlsx)["lot 2"]["E11"].value, "правка человека")
+
+    def test_colors_and_missing_parameters(self):
+        conn = sqlite3.connect(self.root / MANIFEST_NAME)
+        conn.execute("UPDATE anexa22_offers SET spec_offered = 'Manseta 500 ml, Lungime furtun: 120 cm'")
+        conn.commit()
+        conn.close()
+        fo.fill_result(self.xlsx, self.root)
+        ws = load_workbook(self.xlsx)["lot 2"]
+        self.assertIn("// Lungime furtun: 120 cm", ws["E11"].value)
+        self.assertEqual(ws["E11"].fill.fgColor.rgb, fo.COLORS[ev.YELLOW])
+        self.assertEqual(ws.sheet_properties.tabColor.rgb, fo.COLORS[ev.YELLOW])
+
+    def test_all_confirmed_is_green(self):
+        fo.fill_result(self.xlsx, self.root)
+        ws = load_workbook(self.xlsx)["lot 2"]
+        self.assertEqual(ws["E11"].fill.fgColor.rgb, fo.COLORS[ev.GREEN])
+        self.assertEqual(ws.sheet_properties.tabColor.rgb, fo.COLORS[ev.GREEN])
+
+    def test_no_technical_documents(self):
+        conn = sqlite3.connect(self.root / MANIFEST_NAME)
+        conn.execute("DELETE FROM document_refs WHERE sha256 = 'cat'")
+        conn.commit()
+        conn.close()
+        fo.fill_result(self.xlsx, self.root)
+        ws = load_workbook(self.xlsx)["lot 2"]
+        self.assertTrue(ws["E11"].value.endswith("\n//docs"))
+        self.assertEqual(ws["E11"].fill.fgColor.rgb, fo.COLORS[ev.YELLOW])
+
+    def test_brochure_from_another_lot(self):
+        conn = sqlite3.connect(self.root / MANIFEST_NAME)
+        conn.execute("UPDATE document_refs SET lot_no = 7, path = 'lot7/catalog.pdf' WHERE sha256 = 'cat'")
+        conn.commit()
+        conn.close()
+        fo.fill_result(self.xlsx, self.root)
+        self.assertIn("p[1], catalog.pdf", load_workbook(self.xlsx)["lot 2"]["E11"].value)
+
+    def test_missing_manifest_is_an_error(self):
+        (self.root / MANIFEST_NAME).unlink()
+        with self.assertRaises(FileNotFoundError):
+            fo.fill_result(self.xlsx, self.root)
+        self.assertFalse((self.root / MANIFEST_NAME).exists())
 
     def test_dm_cell_prefers_dm_numbers(self):
         rec = {"dm": ["DM000466393,DM000466394"], "standards": ["CE/DM000466393"]}
