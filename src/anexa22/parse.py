@@ -76,6 +76,7 @@ class Offer:
     page_no: int
     lot: Optional[int] = None
     fields: Dict[str, str] = field(default_factory=dict)
+    pages: set = field(default_factory=set)  # все страницы строки, включая перенос на следующие
 
     def get(self, name: str) -> str:
         return self.fields.get(name, "")
@@ -314,8 +315,9 @@ def _to_offers(records, offers: List[Offer], participant: str, sha: str, pno: in
         if previous and not any(rec.get(k) for k in KEY_FIELDS) and not rec.get("section_lot"):
             for k, v in rec.items():
                 previous.fields[k] = f"{previous.fields[k]} {v}" if previous.fields.get(k) else v
+            previous.pages.add(pno)
             continue
-        new.append(Offer(participant, sha, pno, lot_number(rec, lot_by_code), rec))
+        new.append(Offer(participant, sha, pno, lot_number(rec, lot_by_code), rec, {pno}))
     for offer in new:
         both = offer.fields.pop(COUNTRY_PRODUCER, None)
         if both:
@@ -346,6 +348,9 @@ def save_offers(tender_dir: Path, offers: List[Offer]) -> int:
         migrate(conn)
         now = datetime.now().isoformat(timespec="seconds")
         conn.execute("DELETE FROM anexa22_offers")
+        conn.execute("DELETE FROM anexa22_pages")
+        conn.executemany("INSERT OR IGNORE INTO anexa22_pages (sha256, page_no) VALUES (?, ?)",
+                         [(o.sha256, p) for o in offers for p in (o.pages or {o.page_no})])
         conn.executemany(
             "INSERT INTO anexa22_offers (sha256, page_no, participant, lot_no, cpv, item_name, model, country, "
             "producer, spec_required, spec_offered, standards, dm, parsed_at) "

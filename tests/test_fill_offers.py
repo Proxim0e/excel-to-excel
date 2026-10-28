@@ -118,6 +118,16 @@ class FillTests(unittest.TestCase):
         self.assertTrue(ws["E11"].value.endswith("\n//docs"))
         self.assertEqual(ws["E11"].fill.fgColor.rgb, fo.COLORS[ev.YELLOW])
 
+    def test_documents_without_confirmation_are_not_docs_missing(self):
+        conn = sqlite3.connect(self.root / MANIFEST_NAME)
+        conn.execute("UPDATE document_pages SET text = 'Riester general catalog' WHERE sha256 = 'cat'")
+        conn.commit()
+        conn.close()
+        fo.fill_result(self.xlsx, self.root)
+        spec = load_workbook(self.xlsx)["lot 2"]["E11"].value
+        self.assertNotIn("//docs", spec)
+        self.assertIn("// model 5270; Manseta 500 ml; Manometru: Ø 49mm", spec)  # «500ml» - не код модели
+
     def test_brochure_from_another_lot(self):
         conn = sqlite3.connect(self.root / MANIFEST_NAME)
         conn.execute("UPDATE document_refs SET lot_no = 7, path = 'lot7/catalog.pdf' WHERE sha256 = 'cat'")

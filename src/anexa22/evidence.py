@@ -21,6 +21,9 @@ from typing import Dict, List, Optional, Tuple
 from src.classify import GROUPS, normalize
 
 TECH_TYPES = tuple(GROUPS["Document tehnic"] + GROUPS["ISO/CE/DM"])
+# Внутри «пачки» техническими считаются только явно технические страницы: «other» внутри DUAE
+# или финотчёта - не даташит
+PAGE_TECH_TYPES = tuple(t for t in TECH_TYPES if t != "other")
 UNITS = (r"mm2|cm2|mmhg|kpa|bar|mah|ohm|hz|ml|mm|cm|kg|fr|ch|°c|micron[i]?|µm|um|pin|buc|ore|min|"
          r"m|l|g|h|w|v|%")
 VALUE_RE = re.compile(rf"(?<![\w.,])(\d+(?:[.,]\d+)?)\s?({UNITS})(?![a-z])")
@@ -41,7 +44,10 @@ class Evidence:
 def model_tokens(model: str) -> List[str]:
     """Коды из названия модели: токены с цифрами длиной от 4 символов (F4141, 3011-00010-01)."""
     tokens = re.findall(r"[A-Za-z0-9][A-Za-z0-9.\-/]{2,}[A-Za-z0-9]", model or "")
-    return list(dict.fromkeys(t for t in tokens if re.search(r"\d", t) and len(re.sub(r"\W", "", t)) >= 4))
+    return list(dict.fromkeys(
+        t for t in tokens
+        if re.search(r"\d", t) and len(re.sub(r"\W", "", t)) >= 4
+        and not VALUE_RE.fullmatch(normalize(t))))  # «500ml» в названии - объём, а не код
 
 
 TOLERANCE_RE = re.compile(r"(\+\s*/?\s*-|±|\+-)\s*$")
@@ -108,16 +114,19 @@ def tech_pages(conn: sqlite3.Connection, participant: str, lot: Optional[int]):
     """Технические страницы участника по лоту (lot=None - по всем лотам): документ технического типа
     или страница технического типа внутри «пачки» (даташиты после Anexa 22 в одном PDF). Страницы,
     из которых разобрана сама таблица Anexa 22, исключаются - иначе Anexa 22 «подтверждала» бы сама себя."""
-    placeholders = ",".join("?" * len(TECH_TYPES))
+    doc_ph = ",".join("?" * len(TECH_TYPES))
+    page_ph = ",".join("?" * len(PAGE_TECH_TYPES))
     lot_filter = "AND r.lot_no = ?" if lot is not None else ""
-    params = (participant, *([lot] if lot is not None else []), *TECH_TYPES, *TECH_TYPES)
+    params = (participant, *([lot] if lot is not None else []), *TECH_TYPES, *PAGE_TECH_TYPES)
+    # Страницы, через которые прошла таблица Anexa 22 (anexa22_pages), тоже исключаются:
+    # продолжения таблицы с номерами DM в шапке классифицированы как amdm/datasheet
     return conn.execute(f"""
         SELECT d.sha256, MIN(r.original_name), p.page_no, p.text
         FROM document_refs r JOIN documents d USING (sha256) JOIN document_pages p USING (sha256)
         WHERE r.participant = ? {lot_filter}
-          AND (d.doc_type IN ({placeholders}) OR p.page_type IN ({placeholders}))
+          AND (d.doc_type IN ({doc_ph}) OR p.page_type IN ({page_ph}))
           AND COALESCE(p.page_type, '') NOT IN ('anexa22', 'anexa23')
-          AND NOT EXISTS (SELECT 1 FROM anexa22_offers o WHERE o.sha256 = p.sha256 AND o.page_no = p.page_no)
+          AND NOT EXISTS (SELECT 1 FROM anexa22_pages a WHERE a.sha256 = p.sha256 AND a.page_no = p.page_no)
         GROUP BY d.sha256, p.page_no ORDER BY MIN(r.original_name), p.page_no""", params).fetchall()
 
 
@@ -160,7 +169,8 @@ def check_offer(conn: sqlite3.Connection, participant: str, lot: int, model: str
         if wider:
             evidence = _search(wider, codes, values)
             found = {f for ev in evidence for f in ev.found}
-    if not evidence:
+    if not evidence and not pages:
+        # технических документов по лоту нет, и код модели не нашёлся у участника в других лотах
         return OfferCheck(YELLOW, has_docs=False)
     missing = [f"model {c}" for c in codes if c not in found]
     missing += list(dict.fromkeys(parameter_label(spec, num, unit) for num, unit in values

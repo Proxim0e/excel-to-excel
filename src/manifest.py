@@ -61,6 +61,13 @@ CREATE TABLE IF NOT EXISTS anexa22_offers (
     parsed_at     TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_offers_lot ON anexa22_offers(lot_no, participant);
+-- Страницы, через которые прошла таблица Anexa 22 (включая перенос текста последней строки):
+-- это не технические документы, даже если классифицированы как datasheet/amdm
+CREATE TABLE IF NOT EXISTS anexa22_pages (
+    sha256  TEXT NOT NULL,
+    page_no INTEGER NOT NULL,
+    PRIMARY KEY (sha256, page_no)
+);
 CREATE TABLE IF NOT EXISTS document_pages (
     sha256  TEXT NOT NULL REFERENCES documents(sha256),
     page_no INTEGER NOT NULL,
