@@ -138,9 +138,12 @@ class PlaywrightFetcher:
                 pass
 
     # --- разметка таблицы -------------------------------------------------------
-    HEADER_SELECTORS = ["tr[id*='DXHeadersRow'] td", "tr.dxgvHeaderRow td", "th"]
-    FILTER_INPUT_SELECTORS = ["tr[id*='DXFilterRow'] td", "tr.dxgvFilterRow td"]
-    DATA_ROW_SELECTORS = ["tr[id*='DXDataRow']", "tr.dxgvDataRow", "tr.dxgvDataRow_Office365"]
+    # На странице две таблицы DevExpress: слева документы (Tip/Denumire), справа сам реестр.
+    # Проверено вживую 28.10.2026: реестр — ...MainContent_ASPxGridView4.
+    GRID = "[id$='MainContent_ASPxGridView4']"
+    HEADER_SELECTORS = [GRID + " tr[id*='DXHeadersRow'] > td", GRID + " tr.dxgvHeaderRow > td"]
+    FILTER_INPUT_SELECTORS = [GRID + " tr[id*='DXFilterRow'] > td"]
+    DATA_ROW_SELECTORS = [GRID + " tr[id*='DXDataRow']"]
 
     def _first(self, selectors):
         for sel in selectors:
@@ -161,7 +164,7 @@ class PlaywrightFetcher:
             return []
         out = []
         for i in range(loc.count()):
-            cells = loc.nth(i).locator("td").all_inner_texts()
+            cells = loc.nth(i).locator(":scope > td").all_inner_texts()
             # в строке данных может быть служебная первая ячейка — выравниваем по правому краю
             shift = max(0, len(cells) - len(self._columns))
             values = {}
@@ -180,10 +183,11 @@ class PlaywrightFetcher:
             raise RuntimeError("Не нашёл строку фильтров таблицы. Запусти `python -m src.amdm probe`.")
         idx = self._columns.index("dm")
         box = cells.nth(idx).locator("input").first
+        box.fill("")
         box.fill(dm)
         box.press("Enter")
         self._page.wait_for_load_state("networkidle", timeout=60000)
-        time.sleep(0.5)
+        time.sleep(1.0)  # колбэк DevExpress перерисовывает таблицу после networkidle
         for values in self._rows():
             rec = record_from_row(values)
             if rec and rec.dm == dm:
