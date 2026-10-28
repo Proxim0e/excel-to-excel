@@ -5,8 +5,8 @@
 (скрапер, download_worker) продолжает работать без переписывания вызовов.
 
 Что делает:
-  * общий для ВСЕХ потоков лимит частоты: не чаще одного запроса раз в
-    MIN_DELAY секунд (плюс случайная добавка JITTER);
+  * лимит частоты, общий для потоков одного вида работы (Pacer): сканирование лотов
+    и скачивание файлов ограничиваются раздельно (SCRAPE_PACER / DOWNLOAD_PACER);
   * на 429 останавливает все потоки сразу;
   * на серии сбоев подряд (403 / 503 / ошибки сети) останавливает все потоки;
   * 404 не повторяет; 5xx повторяет только несколько раз с нарастающей паузой;
@@ -21,7 +21,7 @@ from urllib.parse import urlparse
 
 import requests
 
-from src.config import DOWNLOAD_RETRIES
+from src.config import DOWNLOAD_RETRIES, SCRAPE_MIN_DELAY, DOWNLOAD_MIN_DELAY
 
 logger = logging.getLogger(__name__)
 
@@ -39,8 +39,7 @@ DOWNLOAD_HEADERS = {
     "Accept-Language": "ro-RO,ro;q=0.9,en;q=0.8",
 }
 
-MIN_DELAY = 1.5                # минимум секунд между ЛЮБЫМИ двумя запросами (общий для потоков)
-JITTER = 0.6                   # случайная добавка к паузе, сек
+JITTER = 0.6                   # случайная добавка к паузе скачивания, сек
 MAX_RETRIES_CAP = 5            # потолок попыток на один запрос
 BACKOFF_BASE = 15              # пауза при сбоях: 15, 30, 45... сек
 MAX_CONSECUTIVE_TROUBLE = 4    # столько сбоев подряд (403/503/сеть) = останавливаем всё
@@ -48,9 +47,6 @@ MAX_CONSECUTIVE_TROUBLE = 4    # столько сбоев подряд (403/503
 # ---------------------------------------------------------------------------
 # Внутреннее состояние
 # ---------------------------------------------------------------------------
-_rate_lock = threading.Lock()
-_next_slot = 0.0
-
 _state_lock = threading.Lock()
 _stop_event = threading.Event()
 _stop_reason = ""
@@ -146,35 +142,54 @@ def _note_trouble(reason: str) -> None:
         raise RateLimitStop(_stop_reason)
 
 
-def _wait_turn() -> None:
+class Pacer:
     """
-    Резервирует следующий временной слот. Потоки выстраиваются в очередь,
-    так что два потока НЕ бьют по серверу одновременно.
+    Лимит частоты для группы потоков: не чаще одного запроса раз в min_delay
+    секунд (плюс случайная добавка до jitter). min_delay = 0 - без ограничения.
     """
-    global _next_slot
-    with _rate_lock:
-        now = time.monotonic()
-        slot = max(now, _next_slot)
-        _next_slot = slot + MIN_DELAY + random.uniform(0, JITTER)
-    delay = slot - now
-    if delay > 0:
-        time.sleep(delay)
+
+    def __init__(self, min_delay: float, jitter: float = 0.0):
+        self.min_delay = min_delay
+        self.jitter = jitter
+        self._lock = threading.Lock()
+        self._next_slot = 0.0
+
+    def wait(self) -> None:
+        """
+        Резервирует следующий временной слот. Потоки выстраиваются в очередь,
+        так что два потока НЕ бьют по серверу одновременно.
+        """
+        if self.min_delay <= 0 and self.jitter <= 0:
+            return
+        with self._lock:
+            now = time.monotonic()
+            slot = max(now, self._next_slot)
+            self._next_slot = slot + self.min_delay + random.uniform(0, self.jitter)
+        delay = slot - now
+        if delay > 0:
+            time.sleep(delay)
+
+
+SCRAPE_PACER = Pacer(SCRAPE_MIN_DELAY)
+DOWNLOAD_PACER = Pacer(DOWNLOAD_MIN_DELAY, JITTER)
 
 
 def smart_request(request_func, url, retries=DOWNLOAD_RETRIES, timeout=30,
-                  action_name="Request", **kwargs):
+                  action_name="Request", pacer=None, **kwargs):
     """
     Универсальная обёртка для запросов (сигнатура прежняя).
+    pacer - чей лимит частоты соблюдать; по умолчанию осторожный DOWNLOAD_PACER.
 
     Бросает:
       RateLimitStop                      - сайт ограничил доступ, надо остановиться;
       requests.exceptions.HTTPError      - проблема с конкретным файлом (404, 403, исчерпаны попытки).
     """
     retries = max(1, min(retries, MAX_RETRIES_CAP))
+    pacer = pacer or DOWNLOAD_PACER
 
     for attempt in range(1, retries + 1):
         _raise_if_stopped()
-        _wait_turn()
+        pacer.wait()
         _raise_if_stopped()
 
         logger.debug(f"[{action_name}] Attempt {attempt}: {url}")

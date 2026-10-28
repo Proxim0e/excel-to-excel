@@ -1,6 +1,6 @@
 from urllib.parse import urljoin
 from typing import List, Optional, Dict
-from src.utils.http_client import smart_request, RateLimitStop
+from src.utils.http_client import smart_request, RateLimitStop, SCRAPE_PACER
 import requests
 from bs4 import BeautifulSoup
 from src.utils.text_helpers import clean_company_name, parse_price_to_number, normalize_spaces
@@ -9,7 +9,7 @@ logging.basicConfig(level=logging.DEBUG,
                     format='%(asctime)s [%(levelname)s] %(message)s')
 logger = logging.getLogger(__name__)
 
-from src.config import HEADERS, BASE, LOT_LINK_RE, MAX_WORKERS
+from src.config import HEADERS, BASE, LOT_LINK_RE, SCRAPE_WORKERS
 from src.models import LotData, Participant
 from src.utils.text_helpers import clean_company_name, parse_price_to_number
 
@@ -23,7 +23,7 @@ class TenderScraper:
         # Инициализируем сессию для переиспользования TCP-соединений
         self.session = requests.Session()
         # Пул соединений под число воркеров, чтобы они не ждали друг друга
-        adapter = requests.adapters.HTTPAdapter(pool_connections=MAX_WORKERS, pool_maxsize=MAX_WORKERS)
+        adapter = requests.adapters.HTTPAdapter(pool_connections=SCRAPE_WORKERS, pool_maxsize=SCRAPE_WORKERS)
         self.session.mount('https://', adapter)
         self.session.mount('http://', adapter)
 
@@ -35,7 +35,8 @@ class TenderScraper:
         и возвращает объект BeautifulSoup. При любой ошибке возвращает None.
         """
         try:
-            resp = smart_request(self.session.get, url, timeout=timeout, action_name="Page")
+            resp = smart_request(self.session.get, url, timeout=timeout, action_name="Page",
+                                 pacer=SCRAPE_PACER)
             return BeautifulSoup(resp.text, "html.parser")
         except Exception as e:
             # Сюда попадает и RateLimitStop: вызывающий код получит None,
@@ -106,7 +107,8 @@ class TenderScraper:
                 self.session.get,
                 lot_url,
                 timeout=30,
-                action_name="Scrape"
+                action_name="Scrape",
+                pacer=SCRAPE_PACER
             )
 
             # Если успех — парсим HTML

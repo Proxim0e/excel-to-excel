@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import shutil
 import threading
+from pathlib import Path
 import requests
 
 from src.utils.file_helpers import sanitize_filename
@@ -14,7 +15,7 @@ from src.utils.http_client import (smart_request, RateLimitStop, is_blocked, sto
 from src.utils.text_helpers import normalize_spaces, prepare_lot_title_for_b1
 
 from config import (
-    RESOURCE_DIR, MAX_WORKERS, DEFAULT_TENDER_URL, ENABLE_DOWNLOADS, DOWNLOAD_DIR, ALLOWED_EXTENSIONS, HEADERS, ONLY_DOWNLOAD
+    RESOURCE_DIR, SCRAPE_WORKERS, DOWNLOAD_WORKERS, DEFAULT_TENDER_URL, ENABLE_DOWNLOADS, DOWNLOAD_DIR, ALLOWED_EXTENSIONS, HEADERS, ONLY_DOWNLOAD
 )
 from scrapers.lot_parser import TenderScraper
 from excel.writer import ExcelManager
@@ -131,7 +132,8 @@ def main():
 
     results = []
     # Используем ThreadPoolExecutor для параллелизма
-    workers = min(MAX_WORKERS, max(2, len(lot_links)))
+    workers = min(SCRAPE_WORKERS, max(2, len(lot_links)))
+    logger.info(f"Потоков сканирования: {workers}")
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
         future_to_url = {executor.submit(scraper.parse_lot_page, url): url for url in lot_links}
@@ -271,6 +273,14 @@ def main():
     # --- Словарь для локального копирования повторяющихся файлов ---
     url_cache = {}
     cache_lock = threading.Lock()
+    # Блокировка на каждую ссылку: один URL качает только один поток,
+    # остальные с той же ссылкой ждут и копируют готовый файл.
+    url_locks = {}
+    failed_urls = set()  # ссылки, которые уже не скачались в этот запуск - повторно не дёргаем
+
+    def get_url_lock(url):
+        with cache_lock:
+            return url_locks.setdefault(url, threading.Lock())
 
     # Общая сессия для скачивания: соединения переиспользуются, нагрузка на сервер меньше
     download_session = make_download_session()
@@ -281,17 +291,25 @@ def main():
         Воркер для скачивания. Использует smart_request + локальный кэш.
         """
         url, file_path, lot_name, part_name, file_name = task_data
-        from pathlib import Path
         file_path = Path(file_path)
 
         # 1. Проверяем, есть ли файл УЖЕ в нужной папке (докачка с прошлого запуска)
         if file_path.exists():
+            # Запоминаем как источник для копирования в другие лоты с той же ссылкой
+            with cache_lock:
+                url_cache.setdefault(url, str(file_path))
             logger.info(f"[SKIP] Уже на месте: {file_name}")
             return "skipped"
 
+        with get_url_lock(url):
+            return fetch_or_copy(url, file_path, lot_name, part_name, file_name)
+
+    def fetch_or_copy(url, file_path, lot_name, part_name, file_name):
+        """Вызывается под блокировкой ссылки url."""
         # 2. Проверяем, скачивали ли мы этот URL ранее в ЭТОТ запуск скрипта?
         with cache_lock:
             cached_path = url_cache.get(url)
+            already_failed = url in failed_urls
 
         # Если файл уже скачивался в другую папку, просто копируем его локально!
         if cached_path and Path(cached_path).exists():
@@ -302,6 +320,11 @@ def main():
                 return "copied"
             except Exception as e:
                 logger.warning(f"Не удалось скопировать {file_name}: {e}. Будем качать заново.")
+
+        # Эта ссылка уже не скачалась у другого потока - не повторяем запрос
+        if already_failed:
+            logger.error(f"[FAIL-HTTP] {file_name}: ссылка уже не скачалась в этом запуске")
+            return "error"
 
         # Если сайт уже ограничил доступ - в сеть не ходим
         if is_blocked():
@@ -337,6 +360,8 @@ def main():
         except RateLimitStop:
             return "blocked"
         except requests.exceptions.HTTPError as e:
+            with cache_lock:
+                failed_urls.add(url)
             logger.error(f"[FAIL-HTTP] {file_name}: {e}")
             return "error"
         except OSError as e:
@@ -349,6 +374,9 @@ def main():
     # Сбор списка задач (планирование путей)
     # -----------------------------------------------------
     tasks = []
+    # Путь -> ссылка. sanitize_filename обрезает длинные имена, и разные документы
+    # одного участника могут получить одно имя: такой файл сохраняем с суффиксом " (2)".
+    planned_paths = {}
 
     for lot_data in results:
         if not lot_data.title or not lot_data.participants:
@@ -409,6 +437,13 @@ def main():
                     continue
                 # Оператор /
                 save_path = part_folder / clean_filename
+                n = 2
+                while planned_paths.get(save_path, url) != url:
+                    save_path = part_folder / f"{Path(clean_filename).stem} ({n}){Path(clean_filename).suffix}"
+                    n += 1
+                if save_path in planned_paths:
+                    continue  # та же ссылка в ту же папку - второй раз не качаем
+                planned_paths[save_path] = url
 
                 # Добавляем задачу в очередь
                 # Передаем lot_name и part_name только для логов
@@ -421,7 +456,7 @@ def main():
     unique_urls = len(set(task[0] for task in tasks))
 
     logger.info(
-        f"Найдено файлов для скачивания: {len(tasks)} (из них {unique_urls} уникальных ссылок). Запуск потоков (Workers: {MAX_WORKERS})...")
+        f"Найдено файлов для скачивания: {len(tasks)} (из них {unique_urls} уникальных ссылок). Запуск потоков (Workers: {DOWNLOAD_WORKERS})...")
     # Запускаем таймер и сохраняем общее количество файлов
     start_download_time = time.time()
     total_tasks = len(tasks)
@@ -433,7 +468,7 @@ def main():
     blocked_count = 0
     processed_count = 0  # <--- ДОБАВИЛИ СЧЕТЧИК
 
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+    with ThreadPoolExecutor(max_workers=DOWNLOAD_WORKERS) as executor:
         future_to_task = {executor.submit(download_worker, task): task for task in tasks}
 
         # Обрабатываем результаты по мере готовности
