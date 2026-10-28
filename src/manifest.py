@@ -43,6 +43,24 @@ CREATE TABLE IF NOT EXISTS document_refs (
 );
 CREATE INDEX IF NOT EXISTS idx_refs_sha ON document_refs(sha256);
 CREATE INDEX IF NOT EXISTS idx_refs_lot ON document_refs(tender_id, lot_no);
+CREATE TABLE IF NOT EXISTS anexa22_offers (
+    id            INTEGER PRIMARY KEY,
+    sha256        TEXT NOT NULL REFERENCES documents(sha256),
+    page_no       INTEGER,
+    participant   TEXT,
+    lot_no        INTEGER,
+    cpv           TEXT,
+    item_name     TEXT,
+    model         TEXT,
+    country       TEXT,
+    producer      TEXT,
+    spec_required TEXT,
+    spec_offered  TEXT,
+    standards     TEXT,
+    dm            TEXT,
+    parsed_at     TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_offers_lot ON anexa22_offers(lot_no, participant);
 CREATE TABLE IF NOT EXISTS document_pages (
     sha256  TEXT NOT NULL REFERENCES documents(sha256),
     page_no INTEGER NOT NULL,

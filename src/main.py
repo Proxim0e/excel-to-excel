@@ -566,6 +566,22 @@ def main():
         f"без файла на диске: {m['missing']} -> {tender_folder / MANIFEST_NAME}")
 
     classify_downloads(tender_folder)
+    parse_anexa22(tender_folder)
+
+
+def parse_anexa22(tender_folder):
+    """Разбор таблиц Anexa 22 (этап 2) в таблицу anexa22_offers манифеста."""
+    try:
+        from src.anexa22.parse import parse_tender, save_offers
+        offers = parse_tender(tender_folder)
+        save_offers(tender_folder, offers)
+        lots = {o.lot for o in offers if o.lot is not None}
+        logger.info(f"[ANEXA22] Строк спецификаций: {len(offers)}, лотов: {len(lots)}, "
+                    f"участников: {len({o.participant for o in offers})}")
+    except ImportError as e:
+        logger.warning(f"[ANEXA22] Разбор пропущен: нет библиотеки ({e}). Установите PyMuPDF.")
+    except Exception as e:
+        logger.error(f"[ANEXA22] Ошибка разбора: {type(e).__name__} - {e}")
 
 
 def classify_downloads(tender_folder):
