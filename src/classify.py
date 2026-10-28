@@ -37,12 +37,11 @@ HEAD_PAGES = 2      # сколько страниц смотрим для кла
 # Тип -> (описание для человека, шаблоны по нормализованному тексту)
 # Нормализация: нижний регистр, без диакритики, пробелы схлопнуты.
 DOC_TYPES = {
+    # Заголовки колонок таблиц Anexa - в STRUCTURAL ниже
     "anexa22": ("Anexa 22 - specificatii tehnice", [
-        r"specificatii? tehnice", r"specificatia tehnica", r"anexa (nr\.? ?)?22\b",
-        r"modelul a\w{0,3}icolului", r"specif\w*\.? tehnic\w* deplin", r"tara de origine.{0,40}producator"]),
+        r"specificatii? tehnice", r"specificatia tehnica", r"anexa (nr\.? ?)?22\b"]),
     "anexa23": ("Anexa 23 - specificatii de pret", [
-        r"specificatii? de pret", r"specificatia de pret", r"anexa (nr\.? ?)?23\b",
-        r"pret unitar \(fara tva\)", r"suma \(fara tva\)"]),
+        r"specificatii? de pret", r"specificatia de pret", r"anexa (nr\.? ?)?23\b"]),
     "duae": ("DUAE - documentul unic de achizitii european", [
         r"documentul unic de achizitii", r"\bduae\b", r"european single procurement"]),
     "cerere_participare": ("Cerere de participare (anexa 7)", [
@@ -68,8 +67,6 @@ DOC_TYPES = {
         r"lista fondatorilor", r"fondatorii"]),
     "raport_financiar": ("Situatii financiare / raport financiar", [
         r"situatii(le)? financiare", r"raport(ul)? financiar", r"\bbilant(ul)?\b"]),
-    "iso": ("Certificat ISO (13485, 9001, 14001)", [
-        r"iso 13485", r"iso 9001", r"iso 14001", r"en iso 1348\d"]),
     "ce_doc": ("Declaratie de conformitate / certificat CE", [
         r"declaration of conformity", r"declaratie de conformitate", r"declaratia de conformitate",
         r"eu declaration", r"ec certificate", r"ce certificate", r"certificat ce\b",
@@ -84,6 +81,12 @@ DOC_TYPES = {
         r"\bprocura\b", r"imputernicire", r"power of attorney"]),
     "declaratie": ("Alte declaratii ale ofertantului", [
         r"\bdeclaratie\b", r"\bdeclaratia\b", r"\bdeclar pe propria raspundere", r"declaratii"]),
+    # После деклараций и доверенностей. «ISO 9001:2015» часто стоит в бланке письма компании,
+    # поэтому номер стандарта засчитывается только рядом со словом «certificat(e)».
+    "iso": ("Certificat ISO / sistem de management al calitatii (13485, 9001, 14001)", [
+        r"certific\w*.{0,300}\biso ?(13485|9001|14001)", r"\biso ?(13485|9001|14001).{0,300}certific",
+        r"certification body", r"quality management system", r"certifi(es|ca) that",
+        r"sistem\w* de management al calitatii"]),
     "datasheet": ("Fisa tehnica / catalog / brosura / instructiuni", [
         r"data ?sheet", r"technical data", r"\bcatalog", r"brochure", r"brosura", r"instructions for use",
         r"user manual", r"instructiuni de utilizare", r"\bprospect", r"fisa tehnica", r"specifications?\b",
@@ -93,9 +96,12 @@ OTHER = "other"
 NO_TEXT = "no_text"
 
 # Только по имени файла (в тексте такие шаблоны дают ложные срабатывания).
-# Имя нормализуется: знаки препинания и цифры -> пробелы.
+# Имя нормализуется: знаки препинания -> пробелы, цифры остаются («iso 13485»).
 FILENAME_ONLY = {
-    "amdm": [r"\blot(ul)?\b.*\breg\b", r"\bdm\b.*\binregistr"],
+    "certificat_inregistrare_firma": [r"certificat de inreg"],
+    "iso": [r"\biso\b"],
+    "ce_doc": [r"certificate of conformity", r"\bce\b"],
+    "amdm": [r"\blot(ul)?\b.*\breg\b", r"\bdm\b.*\binregistr", r"\binreg\b"],
     "datasheet": [r"brosur", r"brochure", r"catalog", r"prospect", r"\bimagin", r"datasheet"],
 }
 
@@ -109,13 +115,18 @@ PRODUCT_MARKERS = [r"www\.", r"[®©™]", r"\bref\.?\b", r"\bp/n\b", r"\bcode\b
                    r"\d+ ?mm\b", r"\d+ ?ml\b", r"\bdisposable\b", r"\breusable\b", r"\bsterile\b"]
 _PRODUCT_RX = [re.compile(p) for p in PRODUCT_MARKERS]
 
-# Вне «шапки» общие слова вроде «specificatii tehnice» встречаются в декларациях,
-# поэтому в тексте Anexa 22/23 узнаются только по заголовкам колонок таблицы.
+# Заголовки колонок таблиц Anexa. Одна колонка встречается и в декларациях
+# (например, об образцах - «modelul articolului»), поэтому таблица засчитывается по двум и более.
 STRUCTURAL = {
     "anexa22": [r"modelul a\w{0,3}icolului", r"specif\w*\.? tehnic\w* deplin", r"specificatia tehnica propusa",
                 r"tara de origine.{0,40}producator"],
-    "anexa23": [r"pret unitar \(fara tva\)", r"suma \(fara tva\)"],
+    "anexa23": [r"pret unitar \(fara tva\)", r"suma \(fara tva\)", r"pret unitar.{0,30}suma"],
 }
+MIN_STRUCTURAL_HITS = 2
+# Вне «шапки» общие слова («specificatii tehnice», «ISO 13485», «regulation (EU) 2017/745»)
+# встречаются в декларациях и брошюрах, поэтому эти типы в тексте не ищутся
+# (Anexa 22/23 в тексте узнаются только по STRUCTURAL).
+TITLE_ONLY = ("anexa22", "anexa23", "iso", "ce_doc")
 # Таблицы Anexa продолжаются на следующих страницах без заголовка - страница наследует тип
 CONTINUED_TYPES = ("anexa22", "anexa23")
 
@@ -123,6 +134,7 @@ CONTINUED_TYPES = ("anexa22", "anexa23")
 # потому что в их шапках встречается слово «declaratie».
 ORDER = list(DOC_TYPES)
 _COMPILED = {t: [re.compile(p) for p in pats] for t, (_, pats) in DOC_TYPES.items()}
+_STRUCTURAL = {t: [re.compile(p) for p in pats] for t, pats in STRUCTURAL.items()}
 
 
 def _relaxed(pattern: str) -> str:
@@ -132,8 +144,22 @@ def _relaxed(pattern: str) -> str:
 
 _FILENAME_COMPILED = {t: [re.compile(_relaxed(p)) for p in pats] + [re.compile(p) for p in FILENAME_ONLY.get(t, [])]
                       for t, (_, pats) in DOC_TYPES.items()}
-_TEXT_COMPILED = {t: ([re.compile(p) for p in STRUCTURAL[t]] if t in STRUCTURAL else rxs)
-                  for t, rxs in _COMPILED.items()}
+
+# Группы, которыми размечает человек (эталон 21641880). Тип системы -> группа.
+GROUPS = {
+    "Documente generale": ["duae", "cerere_participare", "declaratie_valabilitate", "garantie_oferta",
+                           "certificat_restante", "extras_registru", "certificat_inregistrare_firma",
+                           "cont_bancar", "mediu_eee", "lista_fondatori", "raport_financiar", "procura",
+                           "declaratie"],
+    "Document tehnic": ["datasheet", "other"],
+    "ISO/CE/DM": ["iso", "ce_doc", "amdm", "autorizatie_producator"],
+    "anexa22": ["anexa22"],
+    "anexa23": ["anexa23"],
+    "anexa22/anexa23": ["anexa22+23"],
+}
+GROUP_OF = {t: g for g, types in GROUPS.items() for t in types}
+# Синонимы в разметке человека
+GROUP_ALIASES = {"ISO/CE": "ISO/CE/DM", "Certificat de inregistrare": "Documente generale"}
 
 
 @dataclass
@@ -168,16 +194,39 @@ def clean_page(text: str) -> str:
 def normalize_filename(name: str) -> str:
     name = normalize(name)
     name = re.sub(r"\.(pdf|signed|semnat)\b", " ", name)
-    return re.sub(r"[\W\d_]+", " ", name).strip()
+    return re.sub(r"[\W_]+", " ", name).strip()
 
 
-def _first_match(text: str, compiled=None) -> Optional[Tuple[str, str]]:
-    compiled = compiled or _COMPILED
+def _structural_hit(doc_type: str, text: str) -> Optional[str]:
+    hits = [rx.pattern for rx in _STRUCTURAL.get(doc_type, []) if rx.search(text)]
+    return " & ".join(hits) if len(hits) >= MIN_STRUCTURAL_HITS else None
+
+
+def _first_match(text: str, region: str = "title") -> Optional[Tuple[str, str]]:
+    """region: "title" - шапка страницы, "text" - весь текст начала, "filename" - имя файла."""
     for doc_type in ORDER:
-        for rx in compiled[doc_type]:
+        if region == "filename":
+            patterns = _FILENAME_COMPILED[doc_type]
+        elif region == "text" and doc_type in TITLE_ONLY:
+            patterns = []
+        else:
+            patterns = _COMPILED[doc_type]
+        for rx in patterns:
             if rx.search(text):
                 return doc_type, rx.pattern
+        if region != "filename":
+            structural = _structural_hit(doc_type, text)
+            if structural:
+                return doc_type, structural
     return None
+
+
+def group_of(doc_type: Optional[str], contains: str = "") -> Optional[str]:
+    """Группа человека для типа системы; PDF-«пачка» с обеими анексами - это anexa22/anexa23."""
+    parts = set((contains or "").split(","))
+    if {"anexa22", "anexa23"} <= parts:
+        return "anexa22/anexa23"
+    return GROUP_OF.get(doc_type)
 
 
 def classify_pages(cleaned: List[str]) -> List[Optional[str]]:
@@ -201,7 +250,7 @@ def classify(pages: List[str], filename: str = "") -> Classification:
     fname = normalize_filename(filename)
 
     if not texted:
-        hit = _first_match(fname, _FILENAME_COMPILED)
+        hit = _first_match(fname, "filename")
         page_types = [None] * len(pages)
         if hit:
             return Classification(hit[0], 0.3, f"filename(no text):{hit[1]}", page_types, False)
@@ -210,9 +259,8 @@ def classify(pages: List[str], filename: str = "") -> Classification:
     page_types = classify_pages(cleaned)
     title = texted[0][:TITLE_CHARS]
     head = " ".join(texted[:HEAD_PAGES])
-    for region, compiled, conf, label in ((title, _COMPILED, 0.9, "title"), (head, _TEXT_COMPILED, 0.6, "text"),
-                                          (fname, _FILENAME_COMPILED, 0.4, "filename")):
-        hit = _first_match(region, compiled)
+    for text, conf, label in ((title, 0.9, "title"), (head, 0.6, "text"), (fname, 0.4, "filename")):
+        hit = _first_match(text, label)
         if hit:
             doc_type, rule = hit
             # Один PDF с обеими анексами: техническая и ценовая части вместе
@@ -280,6 +328,7 @@ def type_summary(tender_dir: Path) -> List[Tuple[str, int, int]]:
 
 
 REVIEW_NAME = "classification_review.xlsx"
+GOLD_NAME = "classification_gold.xlsx"  # эталонная разметка человека для оценки (--evaluate)
 REVIEW_SHEET = "Документы"
 REVIEW_COLUMN = "Правильный тип"
 EXTRA_TYPES = {
@@ -300,6 +349,7 @@ def export_review(tender_dir: Path, xlsx_path: Optional[Path] = None) -> Path:
     from openpyxl import Workbook
     from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
     from openpyxl.styles import Font, PatternFill
+    from openpyxl.utils import get_column_letter
     from openpyxl.worksheet.datavalidation import DataValidation
 
     def safe(value):
@@ -318,62 +368,126 @@ def export_review(tender_dir: Path, xlsx_path: Optional[Path] = None) -> Path:
     wb = Workbook()
     ws = wb.active
     ws.title = REVIEW_SHEET
-    header = ["sha256", "Тип (система)", "Уверенность", "Источник", "Правило", "Внутри файла", "Страниц",
-              "Есть текст", "Участники", "Лотов", "Имя файла", "Начало первой страницы", "Путь", REVIEW_COLUMN]
+    header = ["sha256", "Тип (система)", "Группа (система)", "Уверенность", "Источник", "Правило", "Внутри файла",
+              "Страниц", "Есть текст", "Участники", "Лотов", "Имя файла", "Начало первой страницы", "Путь",
+              REVIEW_COLUMN]
     ws.append(header)
     for (sha, doc_type, conf, source, rule, contains, pages, has_text, parts, lots, name,
          first_page, path) in rows:
-        ws.append([safe(v) for v in (sha, doc_type, conf, source, rule, contains, pages,
-                                     "да" if has_text else "нет", parts, lots, name,
+        ws.append([safe(v) for v in (sha, doc_type, group_of(doc_type, contains), conf, source, rule, contains,
+                                     pages, "да" if has_text else "нет", parts, lots, name,
                                      clean_page(first_page or "")[:300], path,
                                      doc_type if source == "human" else None)])
     for cell in ws[1]:
         cell.font = Font(bold=True)
-    ws[f"{chr(64 + len(header))}1"].fill = PatternFill("solid", fgColor="FFFF00")
-    for col, width in zip("ABCDEFGHIJKLMN", (14, 22, 11, 9, 30, 30, 8, 9, 30, 7, 40, 80, 20, 22)):
-        ws.column_dimensions[col].width = width
+    review_col = get_column_letter(len(header))
+    ws[f"{review_col}1"].fill = PatternFill("solid", fgColor="FFFF00")
+    for i, width in enumerate((14, 22, 18, 11, 9, 30, 30, 8, 9, 30, 7, 40, 80, 20, 22), start=1):
+        ws.column_dimensions[get_column_letter(i)].width = width
     ws.freeze_panes = "B2"
     ws.auto_filter.ref = ws.dimensions
 
+    # Типы, а ниже группы: группу можно выбрать, чтобы подтвердить, что система не ошиблась с группой
     types_ws = wb.create_sheet("Типы")
     types_ws.append(["Тип", "Описание"])
     for t, desc in all_types().items():
         types_ws.append([t, desc])
+    for g, types in GROUPS.items():
+        if g not in all_types():
+            types_ws.append([g, "группа: " + ", ".join(types)])
     types_ws.column_dimensions["A"].width = 30
     types_ws.column_dimensions["B"].width = 70
 
-    dv = DataValidation(type="list", formula1=f"=Типы!$A$2:$A${len(all_types()) + 1}", allow_blank=True)
+    dv = DataValidation(type="list", formula1=f"=Типы!$A$2:$A${types_ws.max_row}", allow_blank=True)
     ws.add_data_validation(dv)
-    dv.add(f"N2:N{len(rows) + 1}")
+    dv.add(f"{review_col}2:{review_col}{len(rows) + 1}")
 
     wb.save(xlsx_path)
     return xlsx_path
 
 
-def apply_review(tender_dir: Path, xlsx_path: Optional[Path] = None) -> Tuple[int, List[str]]:
-    """Переносит исправления человека в манифест. Возвращает (сколько применено, ошибки)."""
+def read_labels(xlsx_path: Path) -> List[Tuple[int, str, str]]:
+    """(номер строки, sha256, метка человека) для заполненных строк колонки «Правильный тип»."""
     from openpyxl import load_workbook
 
-    xlsx_path = Path(xlsx_path or Path(tender_dir) / REVIEW_NAME)
     wb = load_workbook(xlsx_path, read_only=True)
     try:
         # read_only держит файл открытым до close(): читаем всё сразу и отпускаем файл
-        rows = iter(list(wb[REVIEW_SHEET].iter_rows(values_only=True)))
+        rows = list(wb[REVIEW_SHEET].iter_rows(values_only=True))
     finally:
         wb.close()
-    header = list(next(rows))
+    header = list(rows[0])
     sha_i, fix_i = header.index("sha256"), header.index(REVIEW_COLUMN)
+    return [(n, row[sha_i], str(row[fix_i]).strip())
+            for n, row in enumerate(rows[1:], start=2) if row[sha_i] and row[fix_i] and str(row[fix_i]).strip()]
+
+
+def _label_groups(label: str) -> List[str]:
+    """Группы, допустимые по метке человека: «Document tehnic/ISO/CE» - смешанный документ."""
+    label = GROUP_ALIASES.get(label, label)
+    if label in GROUPS or label in GROUP_OF:
+        return [GROUP_OF.get(label, label)]
+    # Ищем известные названия групп и синонимов внутри метки, от длинных к коротким
+    groups, rest = [], label
+    for name in sorted(list(GROUPS) + list(GROUP_ALIASES), key=len, reverse=True):
+        if name in rest:
+            group = GROUP_ALIASES.get(name, name)
+            if group not in groups:
+                groups.append(group)
+            rest = rest.replace(name, "")
+    return groups
+
+
+def evaluate(tender_dir: Path, gold_path: Optional[Path] = None) -> dict:
+    """Сравнивает группы системы с эталонной разметкой человека."""
+    labels = read_labels(Path(gold_path or Path(tender_dir) / GOLD_NAME))
+    conn = sqlite3.connect(Path(tender_dir) / MANIFEST_NAME)
+    system = {sha: (t, c, has_text) for sha, t, c, has_text
+              in conn.execute("SELECT sha256, doc_type, contains, has_text FROM documents")}
+    names = dict(conn.execute("SELECT sha256, MIN(original_name) FROM document_refs GROUP BY sha256"))
+    conn.close()
+
+    result = {"total": 0, "correct": 0, "scans": 0, "scans_correct": 0, "per_group": {}, "errors": []}
+    for _, sha, label in labels:
+        if sha not in system:
+            continue
+        doc_type, contains, has_text = system[sha]
+        expected = _label_groups(label)
+        got = group_of(doc_type, contains)
+        ok = got in expected
+        result["total"] += 1
+        result["correct"] += ok
+        if not has_text:
+            result["scans"] += 1
+            result["scans_correct"] += ok
+        stats = result["per_group"].setdefault(" / ".join(expected) or label, [0, 0])
+        stats[0] += ok
+        stats[1] += 1
+        if not ok:
+            result["errors"].append((label, doc_type, got, names.get(sha, "")))
+    return result
+
+
+def apply_review(tender_dir: Path, xlsx_path: Optional[Path] = None) -> Tuple[int, List[str]]:
+    """Переносит исправления человека в манифест. Возвращает (сколько применено, ошибки)."""
+    labels = read_labels(Path(xlsx_path or Path(tender_dir) / REVIEW_NAME))
     valid = all_types()
 
     conn = sqlite3.connect(Path(tender_dir) / MANIFEST_NAME)
     applied, errors = 0, []
     now = datetime.now().isoformat(timespec="seconds")
-    for n, row in enumerate(rows, start=2):
-        sha, fix = row[sha_i], (row[fix_i] or "").strip() if row[fix_i] else ""
-        if not fix:
-            continue
+    for n, sha, fix in labels:
         if fix not in valid:
-            errors.append(f"строка {n}: неизвестный тип {fix!r}")
+            group = GROUP_ALIASES.get(fix, fix)
+            if group in GROUPS:
+                # Группа вместо типа: совпала с системой - это подтверждение, иначе нужен конкретный тип
+                row = conn.execute("SELECT doc_type, contains FROM documents WHERE sha256 = ?", (sha,)).fetchone()
+                system_group = group_of(*row) if row else None
+                if system_group != group:
+                    errors.append(f"строка {n}: группа {fix!r} не совпадает с системой ({system_group}) - "
+                                  f"выберите конкретный тип")
+            else:
+                errors.append(f"строка {n}: неизвестный тип {fix!r}")
             continue
         cur = conn.execute(
             "UPDATE documents SET doc_type = ?, type_confidence = 1.0, type_source = 'human', "
@@ -394,6 +508,8 @@ def main(argv=None) -> int:
     parser.add_argument("--export", action="store_true", help=f"выгрузить {REVIEW_NAME} для проверки")
     parser.add_argument("--apply", nargs="?", const="", metavar="XLSX",
                         help=f"применить колонку «{REVIEW_COLUMN}» (по умолчанию {REVIEW_NAME} в папке тендера)")
+    parser.add_argument("--evaluate", nargs="?", const="", metavar="XLSX",
+                        help=f"сравнить группы с эталоном (по умолчанию {GOLD_NAME} в папке тендера)")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="[%(asctime)s] [%(levelname)s] %(message)s")
     sys.stdout.reconfigure(encoding="utf-8")
@@ -408,6 +524,17 @@ def main(argv=None) -> int:
     print(f"Классифицировано сейчас: {sum(counts.values())}")
     for doc_type, docs, refs in type_summary(args.tender_dir):
         print(f"  {doc_type:30} {docs:5} уникальных  {refs:6} в лотах")
+
+    if args.evaluate is not None:
+        r = evaluate(args.tender_dir, Path(args.evaluate) if args.evaluate else None)
+        texted = r["total"] - r["scans"]
+        print(f"\nСовпадение групп с эталоном: {r['correct']}/{r['total']} = {r['correct'] / r['total']:.1%}")
+        print(f"  с текстом: {r['correct'] - r['scans_correct']}/{texted}, сканы: {r['scans_correct']}/{r['scans']}")
+        for g, (ok, n) in sorted(r["per_group"].items(), key=lambda kv: -kv[1][1]):
+            print(f"  {g:32} {ok:4}/{n}")
+        print("Расхождения (эталон <- тип системы, группа системы, файл):")
+        for label, doc_type, got, name in r["errors"]:
+            print(f"  {label:24} <- {str(doc_type):24} {str(got):20} {name[:50]}")
 
     if args.export:
         try:
