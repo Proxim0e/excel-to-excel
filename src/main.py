@@ -227,6 +227,7 @@ def main():
     # -----------------------------------------------------
     # 6. Сохранение файла (ДОЛЖНО БЫТЬ ПЕРЕД ЗАГРУЗКАМИ!)
     # -----------------------------------------------------
+    output_filename = None
     if not ONLY_DOWNLOAD:
         timestamp = datetime.now().strftime("%d.%m.%Y_%H-%M-%S")
         output_filename = RESOURCE_DIR / f"result_{timestamp}.xlsx"
@@ -567,6 +568,26 @@ def main():
 
     classify_downloads(tender_folder)
     parse_anexa22(tender_folder)
+    fill_result_excel(output_filename, tender_folder)
+
+
+def fill_result_excel(output_filename, tender_folder):
+    """Этап 3: строки 3, 4, 11 листов лотов из Anexa 22 + подтверждения из даташитов."""
+    if not output_filename or not output_filename.exists():
+        logger.info("[FILL] Result-файл не создавался (ONLY_DOWNLOAD). Заполнить готовый: "
+                    f"python -m src.excel.fill_offers <result.xlsx> {tender_folder}")
+        return
+    try:
+        from src.excel.fill_offers import fill_result
+        stats = fill_result(output_filename, tender_folder)
+        logger.info(f"[FILL] {output_filename.name}: участников {stats.get('matched', 0)}/"
+                    f"{stats.get('participants', 0)}, строка 3 - {stats.get('row3', 0)}, "
+                    f"строка 4 - {stats.get('row4', 0)}, строка 11 - {stats.get('row11', 0)}, "
+                    f"с цитатами из документов - {stats.get('evidence', 0)}")
+    except PermissionError:
+        logger.warning(f"[FILL] Не удалось записать {output_filename.name}: файл открыт в Excel?")
+    except Exception as e:
+        logger.error(f"[FILL] Ошибка записи в Excel: {type(e).__name__} - {e}")
 
 
 def parse_anexa22(tender_folder):
