@@ -9,6 +9,7 @@ import threading
 from pathlib import Path
 import requests
 
+from src.manifest import Manifest, MANIFEST_NAME
 from src.utils.file_helpers import sanitize_filename
 from src.utils.http_client import (smart_request, RateLimitStop, is_blocked, stop_reason,
                                    make_download_session)
@@ -270,6 +271,9 @@ def main():
     # Создаем базовую папку тендера
     tender_folder.mkdir(parents=True, exist_ok=True)
 
+    # Манифест документов (ADR-001): кто, какой лот, какая ссылка, хеш содержимого
+    manifest = Manifest(tender_folder / MANIFEST_NAME)
+
     # --- Словарь для локального копирования повторяющихся файлов ---
     url_cache = {}
     cache_lock = threading.Lock()
@@ -289,10 +293,18 @@ def main():
     def download_worker(task_data):
         """
         Воркер для скачивания. Использует smart_request + локальный кэш.
+        При любом исходе записывает строку в манифест.
         """
-        url, file_path, lot_name, part_name, file_name = task_data
-        file_path = Path(file_path)
+        url, file_path, lot_name, part_name, file_name, lot_no = task_data
+        status = download_one(url, Path(file_path), lot_name, part_name, file_name)
+        try:
+            manifest.record(tender_id=tender_id, lot_no=lot_no, lot_title=lot_name, participant=part_name,
+                            original_name=file_name, url=url, path=file_path, status=status)
+        except Exception as e:
+            logger.error(f"[MANIFEST] Не удалось записать {file_name}: {type(e).__name__} - {e}")
+        return status
 
+    def download_one(url, file_path, lot_name, part_name, file_name):
         # 1. Проверяем, есть ли файл УЖЕ в нужной папке (докачка с прошлого запуска)
         if file_path.exists():
             # Запоминаем как источник для копирования в другие лоты с той же ссылкой
@@ -447,7 +459,7 @@ def main():
 
                 # Добавляем задачу в очередь
                 # Передаем lot_name и part_name только для логов
-                tasks.append((url, save_path, lot_data.title, part.name, filename))
+                tasks.append((url, save_path, lot_data.title, part.name, filename, lot_data.number))
 
     # Для пробного запуска на небольшом числе файлов раскомментируйте следующую строку:
     #tasks = tasks[:20]
@@ -521,7 +533,8 @@ def main():
     # --- ПРОВЕРКА ФАКТИЧЕСКИХ ФАЙЛОВ НА ДИСКЕ ---
     saved_on_disk = 0
     try:
-        saved_on_disk = sum(1 for x in tender_folder.rglob('*') if x.is_file())
+        saved_on_disk = sum(1 for x in tender_folder.rglob('*')
+                            if x.is_file() and not x.name.startswith(MANIFEST_NAME))
     except Exception as e:
         logger.warning(f"Не удалось посчитать файлы на диске: {e}")
 
@@ -544,6 +557,12 @@ def main():
 
     logger.info(
         f"Скачивание завершено. Скачано: {success_count} | Скопировано: {copied_count} | Пропущено: {skipped_count} | Ошибок: {fail_count}")
+
+    m = manifest.stats()
+    manifest.close()
+    logger.info(
+        f"Манифест: {m['refs']} файлов в лотах, {m['documents']} уникальных по содержимому, "
+        f"без файла на диске: {m['missing']} -> {tender_folder / MANIFEST_NAME}")
 
     if is_blocked():
         logger.error(
