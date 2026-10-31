@@ -14,10 +14,10 @@
 """
 import re
 import sqlite3
-import unicodedata
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
+from src.anexa22.requirements import _fold, check_declarative, label_before, parse_constraints
 from src.classify import GROUPS, normalize
 
 TECH_TYPES = tuple(GROUPS["Document tehnic"] + GROUPS["ISO/CE/DM"])
@@ -97,16 +97,26 @@ MISSING_CHARS = 45
 class OfferCheck:
     status: str                                   # GREEN / LIGHT_GREEN / YELLOW
     evidence: List[Evidence] = field(default_factory=list)
-    missing: List[str] = field(default_factory=list)  # что не найдено: «model F4141», «Lungime: ≥ 15 cm»
+    missing: List[str] = field(default_factory=list)  # уровень 2, не найдено: «model F4141», «Lungime: ≥ 15 cm»
     has_docs: bool = True
+    conflicts: List[str] = field(default_factory=list)         # уровень 1: значение A22 вне требования
+    missing_in_offer: List[str] = field(default_factory=list)  # уровень 1: условие требования не упомянуто
+    copy: bool = False                                         # спецификация - копия требования
 
     def note(self) -> str:
         """Что дописать в строку 11 после спецификации."""
+        parts = []
         if not self.has_docs:
-            return NO_DOCS_MARK
-        parts = [format_evidence(self.evidence)] if self.evidence else []
-        if self.missing:
-            parts.append("// " + "; ".join(self.missing[:MAX_MISSING]))
+            parts.append(NO_DOCS_MARK)
+        else:
+            if self.evidence:
+                parts.append(format_evidence(self.evidence))
+            if self.missing:
+                parts.append("// " + "; ".join(self.missing[:MAX_MISSING]))
+        if self.conflicts:
+            parts.append("// ≠ cerință: " + "; ".join(self.conflicts[:MAX_MISSING]))
+        if self.missing_in_offer:
+            parts.append("// lipsește în A22: " + "; ".join(self.missing_in_offer[:MAX_MISSING]))
         return "\n".join(parts)
 
 
@@ -130,58 +140,89 @@ def tech_pages(conn: sqlite3.Connection, participant: str, lot: Optional[int]):
         GROUP BY d.sha256, p.page_no ORDER BY MIN(r.original_name), p.page_no""", params).fetchall()
 
 
-def _fold(text: str) -> str:
-    """Нижний регистр без диакритики, длина как у исходного текста (для вырезания фрагментов)."""
-    folded = "".join(c for c in unicodedata.normalize("NFKD", text) if not unicodedata.combining(c)).lower()
-    return folded if len(folded) == len(text) else text.lower()
-
-
 def parameter_label(spec: str, num: str, unit: str) -> str:
     """Параметр, к которому относится значение: «4. Lungime: ≥ 15 cm 5. ...» -> «Lungime: ≥ 15 cm»."""
     m = _value_rx(num, unit).search(_fold(spec))
     if not m:
         return f"{num} {unit}"
-    start = 0
-    for sep in re.finditer(r"[\n;,]|(?<!\d)\d{1,2}\.\s*(?=[^\d\s])", spec[:m.start()]):
-        start = sep.end()
-    label = re.sub(r"\s+", " ", spec[start:m.end()]).strip(" -:")
-    # Несколько параметров без разделителей: «Lavabilă la temperatura: 60° C Manometru: Ø 49mm» -
-    # берём последнюю пару «название: значение»
-    # (название - до трёх слов из букв, от 2 символов: не захватываем «60° C» от предыдущего значения)
-    pair = re.search(r"((?:[^\W\d_]{2,}\s+){0,2}[^\W\d_]{2,}\s*:[^:]*)$", label)
-    if pair and pair.start() > 0:
-        label = pair.group(1)
-    return label if len(label) <= MISSING_CHARS else "…" + label[-MISSING_CHARS:]
+    return label_before(spec, m.start(), m.end(), MISSING_CHARS)
 
 
-def check_offer(conn: sqlite3.Connection, participant: str, lot: int, model: str, spec: str) -> OfferCheck:
-    """Уровень 2: код модели и параметры из Anexa 22 в технических документах участника по лоту.
+def check_offer(conn: sqlite3.Connection, participant: str, lot: int, model: str, spec: str,
+                requirement: str = "") -> OfferCheck:
+    """
+    Уровень 1 (если дано требование лота): условия требования против значений Anexa 22.
+    Уровень 2: код модели и параметры из Anexa 22 в технических документах участника по лоту.
     Брошюру часто прикладывают к одному лоту, а ссылаются на неё в нескольких: если в папке лота
-    код модели не найден, ищем в технических документах участника из других лотов."""
+    код модели не найден, ищем в технических документах участника из других лотов.
+    Значение из документа, не совпадающее буквально, засчитывается, если укладывается в условие
+    требования (требование «≥ 15 cm», в даташите «22 cm») - только на страницах с кодом модели.
+    """
+    declared = check_declarative(spec, requirement) if requirement else None
     codes = model_tokens(model)
     values = spec_values(spec)
     pages = tech_pages(conn, participant, lot)
     evidence = _search(pages, codes, values) if pages else []
     found = {f for ev in evidence for f in ev.found}
+    search_pages = pages
     if codes and not any(c in found for c in codes):
         wider = [p for p in tech_pages(conn, participant, None)
                  if any(_alnum(c) in _alnum(p[3]) for c in codes)]
         if wider:
             evidence = _search(wider, codes, values)
             found = {f for ev in evidence for f in ev.found}
+            search_pages = wider
     if not evidence and not pages:
         # технических документов по лоту нет, и код модели не нашёлся у участника в других лотах
-        return OfferCheck(YELLOW, has_docs=False)
+        return _with_declared(OfferCheck(YELLOW, has_docs=False), declared)
+
+    not_found = [(num, unit) for num, unit in values if f"{num} {unit}" not in found]
+    if not_found and requirement and codes:
+        model_pages = [p for p in search_pages if any(_alnum(c) in _alnum(p[3]) for c in codes)]
+        for num, unit in list(not_found):
+            ev = _satisfying_value(model_pages, num, unit, requirement)
+            if ev:
+                evidence.append(ev)
+                not_found.remove((num, unit))
+
     missing = [f"model {c}" for c in codes if c not in found]
-    missing += list(dict.fromkeys(parameter_label(spec, num, unit) for num, unit in values
-                                  if f"{num} {unit}" not in found))
+    missing += list(dict.fromkeys(parameter_label(spec, num, unit) for num, unit in not_found))
     if missing:
         status = YELLOW
     elif codes or values:
         status = GREEN
     else:
         status = LIGHT_GREEN  # проверять нечего - соответствие только декларативное
-    return OfferCheck(status, evidence[:MAX_PAGES], missing)
+    return _with_declared(OfferCheck(status, evidence[:MAX_PAGES], missing), declared)
+
+
+def _with_declared(check: OfferCheck, declared) -> OfferCheck:
+    """Добавляет итог уровня 1: расхождения и пропуски в Anexa 22 делают ячейку жёлтой."""
+    if declared is None:
+        return check
+    check.conflicts = declared.conflicts
+    check.missing_in_offer = declared.missing
+    check.copy = declared.copy
+    if declared.conflicts or declared.missing:
+        check.status = YELLOW
+    return check
+
+
+def _satisfying_value(pages, num: str, unit: str, requirement: str) -> Optional[Evidence]:
+    """Значение в документе, которое укладывается в условие требования для заявленного значения."""
+    offered = parse_constraints(f"{num} {unit}")
+    if not offered:
+        return None
+    conditions = [c for c in parse_constraints(requirement) if c.satisfied_by(offered[0]) and c.kind != "exact"]
+    if not conditions:
+        return None
+    for sha, name, pno, text in pages:
+        for line in text.splitlines():
+            for value in parse_constraints(line):
+                if value.kind == "exact" and any(c.satisfied_by(value) for c in conditions):
+                    quote = re.sub(r"\s+", " ", line).strip()[:QUOTE_CHARS]
+                    return Evidence(name, pno, [quote], [f"{num} {unit}"])
+    return None
 
 
 def find_evidence(conn: sqlite3.Connection, participant: str, lot: int, model: str, spec: str) -> List[Evidence]:

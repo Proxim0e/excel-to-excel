@@ -142,6 +142,41 @@ class FillTests(unittest.TestCase):
             fo.fill_result(self.xlsx, self.root)
         self.assertFalse((self.root / MANIFEST_NAME).exists())
 
+    def set_offer_spec(self, spec, page_text=None):
+        conn = sqlite3.connect(self.root / MANIFEST_NAME)
+        conn.execute("UPDATE anexa22_offers SET spec_offered = ?", (spec,))
+        if page_text:
+            conn.execute("UPDATE document_pages SET text = ? WHERE sha256 = 'cat'", (page_text,))
+        conn.commit()
+        conn.close()
+
+    def set_requirement(self, text):
+        wb = load_workbook(self.xlsx)
+        wb["lot 2"]["B11"] = text
+        wb.save(self.xlsx)
+
+    def test_level1_conflict_note(self):
+        self.set_offer_spec("Manșete infuzii: 1000 ml")
+        self.set_requirement("Manșete infuzii: 500 ml")
+        fo.fill_result(self.xlsx, self.root)
+        cell = load_workbook(self.xlsx)["lot 2"]["E11"]
+        self.assertIn("// ≠ cerință: Manșete infuzii: 500 ml (A22: Manșete infuzii: 1000 ml)", cell.value)
+        self.assertEqual(cell.fill.fgColor.rgb, fo.COLORS[ev.YELLOW])
+
+    def test_level1_missing_note(self):
+        self.set_requirement("Manșete infuzii: 500 ml, Manometru: Ø 49mm, Lungime furtun ≥ 100 cm")
+        fo.fill_result(self.xlsx, self.root)
+        self.assertIn("// lipsește în A22: Lungime furtun ≥ 100 cm", load_workbook(self.xlsx)["lot 2"]["E11"].value)
+
+    def test_document_value_within_requirement_confirms(self):
+        # в A22 «≥ 15 cm», в даташите на странице модели «22 cm» - подтверждено требованием «≥ 15 cm»
+        self.set_offer_spec("Lungime furtun ≥ 15 cm", "Riester Metpak\nNo. 5270\nhose length 22 cm")
+        self.set_requirement("Lungime furtun ≥ 15 cm")
+        fo.fill_result(self.xlsx, self.root)
+        cell = load_workbook(self.xlsx)["lot 2"]["E11"]
+        self.assertIn('"hose length 22 cm"', cell.value)
+        self.assertEqual(cell.fill.fgColor.rgb, fo.COLORS[ev.GREEN])
+
     def test_dm_cell_prefers_dm_numbers(self):
         rec = {"dm": ["DM000466393,DM000466394"], "standards": ["CE/DM000466393"]}
         self.assertEqual(fo.dm_cell(rec), "DM000466393\nDM000466394")

@@ -117,6 +117,8 @@ def fill_result(result_path: Path, tender_dir: Path, out_path: Optional[Path] = 
                 continue
             lot = int(m.group(1))
             statuses = []
+            # Требование лота (B11) - для уровня 1: условия требования против значений Anexa 22
+            requirement = str(ws.cell(row=ROW_SPEC, column=2).value or "")
             for col in range(FIRST_PARTICIPANT_COL, ws.max_column + 1):
                 name = ws.cell(row=ROW_NAME, column=col).value
                 if not name or not str(name).lower().startswith("ofertant"):
@@ -135,9 +137,12 @@ def fill_result(result_path: Path, tender_dir: Path, out_path: Optional[Path] = 
                 spec = "\n".join(rec["spec_offered"])
                 check = None
                 if evidence and spec:
-                    check = check_offer(conn, rec["participant"], lot, "; ".join(rec["model"]), spec)
+                    check = check_offer(conn, rec["participant"], lot, "; ".join(rec["model"]), spec, requirement)
                     stats["evidence"] += bool(check.evidence)
                     stats["no_docs"] += not check.has_docs
+                    stats["conflicts"] += bool(check.conflicts)
+                    stats["missing_in_offer"] += bool(check.missing_in_offer)
+                    stats["copy"] += check.copy
                     stats[check.status] += 1
                     spec = f"{spec}\n{check.note()}" if check.note() else spec
                 if _write(ws, ROW_SPEC, col, spec):
@@ -172,6 +177,9 @@ def main(argv=None) -> int:
           f"строка 11 - {stats.get('row11', 0)} (из них с цитатами из документов: {stats.get('evidence', 0)})")
     print(f"Уровень 2: зелёный - {stats.get(GREEN, 0)}, светло-зелёный - {stats.get(LIGHT_GREEN, 0)}, "
           f"жёлтый - {stats.get(YELLOW, 0)} (из них без технических документов: {stats.get('no_docs', 0)})")
+    print(f"Уровень 1: расхождения с требованием - {stats.get('conflicts', 0)}, условия требования не "
+          f"упомянуты в A22 - {stats.get('missing_in_offer', 0)}, спецификация - копия требования - "
+          f"{stats.get('copy', 0)}")
     print(f"Сохранено: {args.out or args.result}")
     return 0
 
