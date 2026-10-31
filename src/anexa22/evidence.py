@@ -10,7 +10,7 @@
 
 Результат в формате человека: // "цитата" "цитата", p[3], имя документа
 Итог для ячейки: нет технических документов - «//docs» и жёлтый; не найден код модели или параметр -
-«// <параметр>; ...» и жёлтый; всё найдено - зелёный; проверять нечего - светло-зелёный.
+«// <параметр>; ...» и жёлтый; иначе - зелёный (светло-зелёного в централизованных процедурах нет).
 """
 import re
 import sqlite3
@@ -87,7 +87,7 @@ def _value_rx(num: str, unit: str):
 
 
 # Итог уровня 2 для ячейки строки 11 (цвета - как в Excel Ivan, кодбук концепта)
-GREEN, LIGHT_GREEN, YELLOW = "green", "light_green", "yellow"
+GREEN, YELLOW = "green", "yellow"
 NO_DOCS_MARK = "//docs"
 MAX_MISSING = 6
 MISSING_CHARS = 45
@@ -95,7 +95,7 @@ MISSING_CHARS = 45
 
 @dataclass
 class OfferCheck:
-    status: str                                   # GREEN / LIGHT_GREEN / YELLOW
+    status: str                                   # GREEN / YELLOW
     evidence: List[Evidence] = field(default_factory=list)
     missing: List[str] = field(default_factory=list)  # уровень 2, не найдено: «model F4141», «Lungime: ≥ 15 cm»
     has_docs: bool = True
@@ -187,12 +187,9 @@ def check_offer(conn: sqlite3.Connection, participant: str, lot: int, model: str
 
     missing = [f"model {c}" for c in codes if c not in found]
     missing += list(dict.fromkeys(parameter_label(spec, num, unit) for num, unit in not_found))
-    if missing:
-        status = YELLOW
-    elif codes or values:
-        status = GREEN
-    else:
-        status = LIGHT_GREEN  # проверять нечего - соответствие только декларативное
+    # Светло-зелёный («только декларативно») - для обычных процедур; в централизованных его нет:
+    # документы есть и ничего не противоречит - зелёный
+    status = YELLOW if missing else GREEN
     return _with_declared(OfferCheck(status, evidence[:MAX_PAGES], missing), declared)
 
 

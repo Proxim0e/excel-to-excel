@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 
 from openpyxl import Workbook, load_workbook
+from openpyxl.styles import Alignment, PatternFill
 
 from src.anexa22 import evidence as ev
 from src.excel import fill_offers as fo
@@ -59,7 +60,12 @@ class FillTests(unittest.TestCase):
         wb = Workbook()
         ws = wb.active
         ws.title = "lot 2"
+        # Как в шаблоне: E1 «Tehnic corespunde» голубой, строки 1 у остальных - голубые пустые, строка 3 по центру
+        ws["E1"], ws["F1"] = "Tehnic    corespunde ", None
+        for a in ("E1", "F1"):
+            ws[a].fill = PatternFill("solid", fgColor="FF00B0F0")
         ws["E2"], ws["E3"] = "Ofertant: SOGNO", TEMPLATE_ROW3
+        ws["E3"].alignment = Alignment(horizontal="center", vertical="center")
         ws["F2"], ws["F4"] = "Ofertant: Labromed Laborator SRL", "уже заполнено человеком"
         ws["G2"] = "Ofertant: "
         self.xlsx = self.root / "result.xlsx"
@@ -176,6 +182,45 @@ class FillTests(unittest.TestCase):
         cell = load_workbook(self.xlsx)["lot 2"]["E11"]
         self.assertIn('"hose length 22 cm"', cell.value)
         self.assertEqual(cell.fill.fgColor.rgb, fo.COLORS[ev.GREEN])
+
+    def test_row3_keeps_template_centering(self):
+        fo.fill_result(self.xlsx, self.root)
+        a = load_workbook(self.xlsx)["lot 2"]["E3"].alignment
+        self.assertEqual((a.horizontal, a.vertical, a.wrap_text), ("center", "center", True))
+
+    def test_status_duplicated_in_row1(self):
+        self.set_offer_spec("Manseta 500 ml, Lungime furtun: 120 cm")  # 120 cm не подтверждено - жёлтый
+        fo.fill_result(self.xlsx, self.root)
+        ws = load_workbook(self.xlsx)["lot 2"]
+        self.assertEqual(ws["E1"].fill.fgColor.rgb, fo.COLORS[ev.YELLOW])
+        self.assertEqual(ws["E1"].value, "Tehnic    corespunde ")
+
+    def test_row1_text_added_for_other_participants(self):
+        wb = load_workbook(self.xlsx)
+        ws = wb["lot 2"]
+        ws["E2"] = "Ofertant: Labromed"
+        ws["F2"] = "Ofertant: SOGNO"
+        wb.save(self.xlsx)
+        fo.fill_result(self.xlsx, self.root)
+        ws = load_workbook(self.xlsx)["lot 2"]
+        self.assertEqual(ws["F1"].value, "Tehnic    corespunde ")
+        self.assertEqual(ws["F1"].fill.fgColor.rgb, fo.COLORS[ev.GREEN])
+
+    def test_human_color_in_row1_is_kept(self):
+        wb = load_workbook(self.xlsx)
+        wb["lot 2"]["E1"].fill = PatternFill("solid", fgColor="FFFF0000")  # красный поставил человек
+        wb.save(self.xlsx)
+        fo.fill_result(self.xlsx, self.root)
+        self.assertEqual(load_workbook(self.xlsx)["lot 2"]["E1"].fill.fgColor.rgb, "FFFF0000")
+
+    def test_nothing_to_check_is_green(self):
+        self.set_offer_spec("Manseta din bumbac, lavabila")
+        conn = sqlite3.connect(self.root / MANIFEST_NAME)
+        conn.execute("UPDATE anexa22_offers SET model = 'Metpak'")
+        conn.commit()
+        conn.close()
+        fo.fill_result(self.xlsx, self.root)
+        self.assertEqual(load_workbook(self.xlsx)["lot 2"]["E11"].fill.fgColor.rgb, fo.COLORS[ev.GREEN])
 
     def test_dm_cell_prefers_dm_numbers(self):
         rec = {"dm": ["DM000466393,DM000466394"], "standards": ["CE/DM000466393"]}

@@ -7,10 +7,11 @@
   строка 11 - предложенная (декларативная) спецификация,
               плюс уровень 2: // "цитаты из даташита", p[страница], документ;
               нет технических документов - //docs, не найден параметр - // <параметр>.
-Ячейка строки 11 красится по итогу уровня 2 (жёлтый - нужны уточнения, зелёный - подтверждено,
-светло-зелёный - только декларативно), вкладка листа - по худшему участнику.
-Пишется только в пустые ячейки (или в шаблон с пустыми подписями) - ничего не затирается;
-уже окрашенные вкладки (например, «не состоялась») не перекрашиваются.
+Ячейка строки 11 красится по итогу уровней 1-2 (жёлтый - нужны уточнения, зелёный - подтверждено),
+тот же статус дублируется в строке 1 участника («Tehnic corespunde»), вкладка листа - по худшему участнику.
+Пишется только в пустые ячейки (или в шаблон с пустыми подписями) - ничего не затирается; выравнивание
+шаблона сохраняется (строка 3 по центру). Перекрашиваются только шаблонные цвета: голубая заливка
+строки 1 и зелёная вкладка; «не состоялась» (тёмно-синий) не трогается.
 
 Запуск отдельно:  python -m src.excel.fill_offers <result.xlsx> <папка тендера> [--out <файл>] [--no-evidence]
 """
@@ -20,6 +21,7 @@ import re
 import sqlite3
 import sys
 from collections import defaultdict
+from copy import copy
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -27,25 +29,28 @@ from openpyxl import load_workbook
 from openpyxl.styles import Alignment, PatternFill
 
 from src.anexa22.evaluate import participant_key
-from src.anexa22.evidence import GREEN, LIGHT_GREEN, YELLOW, check_offer
+from src.anexa22.evidence import GREEN, YELLOW, check_offer
 from src.anexa22.gold import parse_row3
 from src.manifest import MANIFEST_NAME
 
 logger = logging.getLogger(__name__)
 
 FIRST_PARTICIPANT_COL = 5   # E
-ROW_NAME, ROW_PRODUCER, ROW_DM, ROW_SPEC = 2, 3, 4, 11
+ROW_STATUS, ROW_NAME, ROW_PRODUCER, ROW_DM, ROW_SPEC = 1, 2, 3, 4, 11
 SHEET_RE = re.compile(r"lot\s*(\d+)", re.IGNORECASE)
 EXCEL_CELL_LIMIT = 32767
-WRAP = Alignment(wrap_text=True, vertical="top")
+SPEC_ALIGNMENT = Alignment(wrap_text=True, vertical="top")  # длинную спецификацию читать слева сверху
 
-# Цвета как в Excel Ivan (21641880 CDM27 B): зелёный 00B050, жёлтый FFFF00; светло-зелёный -
-# стандартный светло-зелёный Excel (в образце не встречается)
-COLORS = {GREEN: "FF00B050", LIGHT_GREEN: "FF92D050", YELLOW: "FFFFFF00"}
+# Цвета как в Excel Ivan (21641880 CDM27 B): зелёный 00B050, жёлтый FFFF00
+COLORS = {GREEN: "FF00B050", YELLOW: "FFFFFF00"}
 # Вкладка листа: хоть один участник требует уточнений - жёлтая; все подтверждены - зелёная.
 # Шаблон уже красит вкладки в зелёный, поэтому сохраняем только осмысленные цвета («не состоялась»).
-TAB_PRIORITY = (YELLOW, LIGHT_GREEN, GREEN)
+TAB_PRIORITY = (YELLOW, GREEN)
 KEEP_TAB_COLORS = {"FF001F4D", "001F4D"}
+# Строка 1 участника: шаблон даёт голубую заливку («Tehnic corespunde») - её заменяем цветом статуса,
+# другие цвета ставил человек и их не трогаем
+TEMPLATE_STATUS_FILLS = {None, "00000000", "FF00B0F0", "00B0F0"}
+STATUS_TEXT = "Tehnic    corespunde "  # как в шаблоне (E1)
 
 OFFER_FIELDS = ("model", "country", "producer", "spec_offered", "standards", "dm")
 
@@ -90,12 +95,31 @@ def _write(ws, row: int, col: int, value: str) -> bool:
     if not value or not _is_empty(cell.value, row):
         return False
     cell.value = value[:EXCEL_CELL_LIMIT]
-    cell.alignment = WRAP
+    if row == ROW_SPEC:
+        cell.alignment = SPEC_ALIGNMENT
+    else:
+        # выравнивание шаблона (строка 3 - по центру) сохраняется, добавляется только перенос строк
+        old = cell.alignment
+        cell.alignment = Alignment(horizontal=old.horizontal, vertical=old.vertical, wrap_text=True)
     return True
 
 
 def _fill(status: str) -> PatternFill:
     return PatternFill("solid", fgColor=COLORS[status])
+
+
+def _mark_status(ws, col: int, status: str, template_text: str) -> None:
+    """Строка 1 участника дублирует статус: цвет как у строки 11, текст шаблона, если пусто."""
+    cell = ws.cell(row=ROW_STATUS, column=col)
+    current = cell.fill.fgColor.rgb if cell.fill is not None and cell.fill.fill_type == "solid" else None
+    if str(current).upper() not in {str(c).upper() for c in TEMPLATE_STATUS_FILLS}:
+        return  # цвет поставил человек
+    if not cell.value:
+        cell.value = template_text
+        source = ws.cell(row=ROW_STATUS, column=FIRST_PARTICIPANT_COL)
+        if source.has_style:
+            cell.font, cell.alignment, cell.border = copy(source.font), copy(source.alignment), copy(source.border)
+    cell.fill = _fill(status)
 
 
 def fill_result(result_path: Path, tender_dir: Path, out_path: Optional[Path] = None,
@@ -119,6 +143,7 @@ def fill_result(result_path: Path, tender_dir: Path, out_path: Optional[Path] = 
             statuses = []
             # Требование лота (B11) - для уровня 1: условия требования против значений Anexa 22
             requirement = str(ws.cell(row=ROW_SPEC, column=2).value or "")
+            status_text = ws.cell(row=ROW_STATUS, column=FIRST_PARTICIPANT_COL).value or STATUS_TEXT
             for col in range(FIRST_PARTICIPANT_COL, ws.max_column + 1):
                 name = ws.cell(row=ROW_NAME, column=col).value
                 if not name or not str(name).lower().startswith("ofertant"):
@@ -149,6 +174,7 @@ def fill_result(result_path: Path, tender_dir: Path, out_path: Optional[Path] = 
                     stats["row11"] += 1
                     if check:
                         ws.cell(row=ROW_SPEC, column=col).fill = _fill(check.status)
+                        _mark_status(ws, col, check.status, status_text)
                         statuses.append(check.status)
             tab = ws.sheet_properties.tabColor
             if statuses and not (tab is not None and str(tab.rgb).upper() in KEEP_TAB_COLORS):
@@ -175,7 +201,7 @@ def main(argv=None) -> int:
     print(f"Участников в листах: {stats.get('participants', 0)}, со строкой Anexa 22: {stats.get('matched', 0)}")
     print(f"Записано: строка 3 - {stats.get('row3', 0)}, строка 4 - {stats.get('row4', 0)}, "
           f"строка 11 - {stats.get('row11', 0)} (из них с цитатами из документов: {stats.get('evidence', 0)})")
-    print(f"Уровень 2: зелёный - {stats.get(GREEN, 0)}, светло-зелёный - {stats.get(LIGHT_GREEN, 0)}, "
+    print(f"Уровни 1-2: зелёный - {stats.get(GREEN, 0)}, "
           f"жёлтый - {stats.get(YELLOW, 0)} (из них без технических документов: {stats.get('no_docs', 0)})")
     print(f"Уровень 1: расхождения с требованием - {stats.get('conflicts', 0)}, условия требования не "
           f"упомянуты в A22 - {stats.get('missing_in_offer', 0)}, спецификация - копия требования - "
