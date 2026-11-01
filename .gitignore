@@ -2,3 +2,8 @@
 runConfigurations/
 __pycache__/
 .venv/
+
+# Проверка AMDM: локальная копия реестра и результаты
+resources/amdm_registry.sqlite
+resources/amdm_probe/
+*_AMDM.xlsx
