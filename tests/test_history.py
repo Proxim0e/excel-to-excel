@@ -107,6 +107,23 @@ class ImportTests(ImportFixture):
         self.assertEqual(self.conn.execute("SELECT participant, label, color FROM clarifications").fetchone(),
                          ("Electeh SRL", "clarificări (runda 1)", d.GREEN))
 
+    def test_reason_from_clarification_column_without_the_word(self):
+        # как в лоте 248: красный «Tehnic corespunde», справа колонка с одним «nu este inregistrat»
+        from openpyxl import load_workbook
+        self.save(electeh_color=d.RED, electeh_text="Tehnic corespunde")
+        wb = load_workbook(self.xlsx)
+        wb["lot 29"]["F3"], wb["lot 29"]["F11"] = "nu este inregistrat", None
+        wb.save(self.xlsx)
+        import_workbook(self.conn, self.xlsx)
+        row = self.conn.execute("SELECT decision, reason, needs_review FROM offers "
+                                "WHERE participant = 'Electeh SRL'").fetchone()
+        self.assertEqual(row, ("rejected", "amdm", None))
+        self.assertEqual(self.conn.execute("SELECT label FROM clarifications").fetchone(), ("nu este inregistrat",))
+
+    def test_force_reimports_unchanged_file(self):
+        import_workbook(self.conn, self.xlsx)
+        self.assertFalse(import_workbook(self.conn, self.xlsx, force=True)["skipped"])
+
     def test_unchanged_file_is_skipped(self):
         first = import_workbook(self.conn, self.xlsx)
         second = import_workbook(self.conn, self.xlsx)

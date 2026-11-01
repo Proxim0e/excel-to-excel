@@ -19,7 +19,7 @@ from typing import Dict, List, Optional, Tuple
 
 from src.amdm.parse import parse_row3, parse_row4
 from src.amdm.workbook import load_workbook_tolerant
-from src.history.decode import decode_offer, lot_outcome, norm_color, sheet_suffix
+from src.history.decode import decode_offer, lot_outcome, norm_color, rejection_reason, sheet_suffix
 
 FIRST_PARTICIPANT_COL = 5
 EVENT_FIELDS = ("decision", "reason", "row1_text", "row1_color", "row11_color", "unit_price", "model", "dm")
@@ -96,13 +96,28 @@ def read_workbook(path: Path):
                     if participant:
                         current = Offer(lot_no, ws.title, col, participant, _offer_values(ws, col, quantity, base_value, suffix))
                         offers.append(current)
-                elif current and ("clarific" in row3.lower() or
-                                  "clarific" in (_clean(ws.cell(row=4, column=col).value) or "").lower()):
-                    current.clarifications.append((col, row3, _clean(ws.cell(row=11, column=col).value),
+                elif current and not name and any(_clean(ws.cell(row=r, column=col).value) for r in (3, 4, 11)):
+                    # Колонка уточнений: справа от участника, без «Ofertant», с содержимым. Слова
+                    # «clarificări» может не быть - в строке 3 сразу итог («nu este inregistrat»)
+                    current.clarifications.append((col, row3 or _clean(ws.cell(row=4, column=col).value),
+                                                   _clean(ws.cell(row=11, column=col).value),
                                                    _rgb(ws.cell(row=11, column=col))))
     finally:
         wb.close()
+    for o in offers:
+        _reason_from_clarifications(o)
     return lots, offers
+
+
+def _reason_from_clarifications(offer: Offer) -> None:
+    """Отказ без причины в строке 1: причина из колонок уточнений («nu este inregistrat»)."""
+    v = offer.values
+    if v["decision"] != "rejected" or v["reason"] or not offer.clarifications:
+        return
+    text = " ".join(f"{label or ''} {body or ''}" for _, label, body, _ in offer.clarifications)
+    reason = rejection_reason(text, None)
+    if reason:
+        v["reason"], v["needs_review"] = reason, None
 
 
 def _offer_values(ws, col: int, quantity: Optional[float], base_value: Optional[float], suffix: str) -> dict:
@@ -135,8 +150,9 @@ def tender_id_from(path: Path) -> Optional[str]:
     return m.group(1) if m else None
 
 
-def import_workbook(conn, path: Path, tender_id: Optional[str] = None) -> dict:
-    """Новый снимок тендера и события относительно предыдущего. Без изменений файла - пропуск."""
+def import_workbook(conn, path: Path, tender_id: Optional[str] = None, force: bool = False) -> dict:
+    """Новый снимок тендера и события относительно предыдущего. Без изменений файла - пропуск
+    (force - перечитать тот же файл, например после улучшения импорта)."""
     path = Path(path)
     tender_id = tender_id or tender_id_from(path)
     if not tender_id:
@@ -144,7 +160,7 @@ def import_workbook(conn, path: Path, tender_id: Optional[str] = None) -> dict:
     sha = hashlib.sha256(path.read_bytes()).hexdigest()
     prev = conn.execute("SELECT id, file_sha256 FROM snapshots WHERE tender_id = ? ORDER BY id DESC LIMIT 1",
                         (tender_id,)).fetchone()
-    if prev and prev[1] == sha:
+    if prev and prev[1] == sha and not force:
         return {"tender_id": tender_id, "snapshot_id": prev[0], "skipped": True}
 
     lots, offers = read_workbook(path)

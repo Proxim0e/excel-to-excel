@@ -19,7 +19,7 @@ from src.history.importer import import_workbook
 def cmd_import(args) -> int:
     conn = connect(args.db)
     try:
-        r = import_workbook(conn, Path(args.workbook), args.tender)
+        r = import_workbook(conn, Path(args.workbook), args.tender, force=args.force)
         if r["skipped"]:
             print(f"Тендер {r['tender_id']}: файл не менялся с последнего импорта (снимок {r['snapshot_id']})")
             return 0
@@ -31,9 +31,13 @@ def cmd_import(args) -> int:
         print("Причины отказа:", dict(Counter(r[1] for r in rows if r[1]).most_common()))
         print("Итоги лотов:", dict(Counter(o for (o,) in conn.execute(
             "SELECT outcome FROM lots WHERE snapshot_id = ?", (sid,))).most_common()))
-        review = [r for r in rows if r[2]]
-        print(f"Спросить человека: {len(review)}")
-        for decision, _, why, sheet, who, text in review[:args.show]:
+        # открытые вопросы - с учётом уже данных ответов («спросить один раз»)
+        review = conn.execute("SELECT sheet, participant, open_question, row1_text FROM current_offers "
+                              "WHERE tender_id = ? AND open_question IS NOT NULL ORDER BY lot_no, col",
+                              (r["tender_id"],)).fetchall()
+        print(f"Спросить человека: {len(review)}"
+              + (f" (лист «Проверить»: python -m src.history review export {r['tender_id']})" if review else ""))
+        for sheet, who, why, text in review[:args.show]:
             print(f"  {sheet:10} {who[:28]:28} {why} | «{text}»")
         if r["events"]:
             print(f"События относительно прошлого снимка: {len(r['events'])}")
@@ -90,6 +94,7 @@ def main(argv=None) -> int:
     i = sub.add_parser("import", help="импортировать рабочий Excel тендера (новый снимок)")
     i.add_argument("workbook")
     i.add_argument("--tender", help="номер тендера, если его нет в имени файла")
+    i.add_argument("--force", action="store_true", help="перечитать файл, даже если он не менялся")
     i.add_argument("--show", type=int, default=25, help="сколько строк «спросить человека» и событий показать")
     i.set_defaults(func=cmd_import)
     e = sub.add_parser("events", help="события тендера (изменения между снимками)")
