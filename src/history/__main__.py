@@ -3,6 +3,8 @@ python -m src.history import "<рабочий Excel>" [--tender 21641880] [--db 
 python -m src.history events 21641880
 python -m src.history review export 21641880     # лист «Проверить» с открытыми вопросами
 python -m src.history review apply 21641880      # ответы человека -> база знаний
+python -m src.history card F4141                 # карточка модели (DM, код модели или производитель)
+python -m src.history catalog                    # все модели и оферты -> data/catalog.xlsx
 
 Импорт рабочего Excel тендера в базу знаний (снимок + события), сводка по решениям,
 вопросы человеку и его ответы («спросить один раз»).
@@ -86,6 +88,40 @@ def cmd_review(args) -> int:
     return 0
 
 
+def cmd_card(args) -> int:
+    from src.history.cards import build_cards, find_cards, format_card
+
+    conn = connect(args.db)
+    try:
+        found = find_cards(build_cards(conn), args.query)
+    finally:
+        conn.close()
+    if not found:
+        print(f"Модель «{args.query}» в базе знаний не найдена")
+        return 1
+    if len(found) > args.limit:
+        print(f"Найдено моделей: {len(found)}, показаны {args.limit} с наибольшим числом оферт "
+              f"(уточните запрос или --limit)")
+    for card in found[:args.limit]:
+        print(format_card(card))
+        print()
+    return 0
+
+
+def cmd_catalog(args) -> int:
+    from src.history.cards import build_cards, export_catalog
+
+    conn = connect(args.db)
+    try:
+        cards = build_cards(conn)
+    finally:
+        conn.close()
+    path = Path(args.out) if args.out else Path(args.db).parent / "catalog.xlsx"
+    n = export_catalog(cards, path)
+    print(f"Моделей: {n}, оферт: {sum(len(c.offers) for c in cards.values())} -> {path}")
+    return 0
+
+
 def main(argv=None) -> int:
     sys.stdout.reconfigure(encoding="utf-8")
     ap = argparse.ArgumentParser(prog="python -m src.history", description="База знаний: история тендеров")
@@ -105,6 +141,13 @@ def main(argv=None) -> int:
     r.add_argument("tender")
     r.add_argument("--file", help="файл «Проверить» (по умолчанию data/review_<тендер>.xlsx)")
     r.set_defaults(func=cmd_review)
+    c = sub.add_parser("card", help="карточка модели: по номеру DM, коду модели или производителю")
+    c.add_argument("query")
+    c.add_argument("--limit", type=int, default=5)
+    c.set_defaults(func=cmd_card)
+    k = sub.add_parser("catalog", help="все модели и оферты в Excel (data/catalog.xlsx)")
+    k.add_argument("--out")
+    k.set_defaults(func=cmd_catalog)
     args = ap.parse_args(argv)
     return args.func(args)
 
