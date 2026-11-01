@@ -7,3 +7,6 @@ __pycache__/
 resources/amdm_registry.sqlite
 resources/amdm_probe/
 *_AMDM.xlsx
+
+# База знаний (история тендеров) - локальная
+data/
