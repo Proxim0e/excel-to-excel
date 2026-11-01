@@ -48,10 +48,26 @@ def get_parent_data() -> Dict[int, Dict[str, Any]]:
     if 'nr_lot' not in col_indices:
         raise ValueError("Column 'Nr. Lot' not found in parent file headers")
 
-    lot_data = {}
-    positions: Dict[int, int] = {}  # лот -> число позиций, если больше одной
+    return collect_lots(ws.iter_rows(min_row=2, values_only=True), col_indices)
 
-    for row in ws.iter_rows(min_row=2, values_only=True):
+
+POSITION_KEYS = ('specificatie', 'unitate_masura', 'cantitate_total')
+
+
+def collect_lots(rows, col_indices: Dict[str, int]) -> Dict[int, Dict[str, Any]]:
+    """
+    Строки исходного файла -> данные по лотам.
+
+    Если номер лота повторяется в нескольких строках - это один лот из нескольких позиций
+    (в 21641880: лоты 184-201, 279 - тест-индикатор + журнал REGISTRU, лот 69 - 9 позиций),
+    а не дубль. Название, количество, единица и сумма лота (suma alocată указана один раз) - по
+    первой позиции; спецификация лота (B11) - все позиции по порядку, чтобы требования ко второй
+    и следующим позициям не терялись при проверке оферт.
+    """
+    lot_data: Dict[int, Dict[str, Any]] = {}
+    positions: Dict[int, List[Dict[str, Any]]] = {}
+
+    for row in rows:
         nr_lot_val = row[col_indices['nr_lot'] - 1]
 
         # Пропускаем пустые строки
@@ -72,12 +88,9 @@ def get_parent_data() -> Dict[int, Dict[str, Any]]:
             else:
                 data[key] = None
 
+        positions.setdefault(nr_lot, []).append({k: data[k] for k in POSITION_KEYS})
         if nr_lot in lot_data:
-            # Лот из нескольких позиций: строки с тем же номером лота (в 21641880 - лоты 184-201, 279:
-            # тест-индикатор + журнал REGISTRU; лот 69 - 9 позиций). Сумма лота (suma alocată) - только
-            # в первой строке. Раньше бралась последняя позиция, и сумма лота терялась (D8 = 0): данные
-            # лота - по первой позиции, пустые значения следующих её не затирают.
-            positions[nr_lot] = positions.get(nr_lot, 1) + 1
+            # пустые значения первой позиции дополняются из следующих, непустые не затираются
             first = lot_data[nr_lot]
             for k, v in data.items():
                 if first.get(k) in (None, "") and v not in (None, ""):
@@ -85,11 +98,28 @@ def get_parent_data() -> Dict[int, Dict[str, Any]]:
             continue
         lot_data[nr_lot] = data
 
-    if positions:
-        logger.info(f"Лоты из нескольких позиций (данные лота - по первой позиции): "
-                    f"{', '.join(f'{lot} ({n})' for lot, n in sorted(positions.items()))}")
+    multi = {lot: pos for lot, pos in positions.items() if len(pos) > 1}
+    for lot, pos in multi.items():
+        lot_data[lot]['specificatie'] = _positions_spec(pos)
+        lot_data[lot]['positions'] = pos
+    if multi:
+        logger.info(f"Лоты из нескольких позиций (данные лота - по первой позиции, спецификация - все позиции): "
+                    f"{', '.join(f'{lot} ({len(pos)})' for lot, pos in sorted(multi.items()))}")
 
     return lot_data
+
+
+def _positions_spec(positions: List[Dict[str, Any]]) -> str:
+    """Спецификация лота из нескольких позиций: 'Poziția N (кол-во ед.): спецификация'."""
+    parts = []
+    for i, pos in enumerate(positions, 1):
+        qty = pos.get('cantitate_total')
+        if isinstance(qty, float) and qty.is_integer():
+            qty = int(qty)
+        amount = " ".join(str(x).strip() for x in (qty, pos.get('unitate_masura')) if x not in (None, ""))
+        head = f"Poziția {i}" + (f" ({amount})" if amount else "")
+        parts.append(f"{head}: {str(pos.get('specificatie') or '').strip()}")
+    return "\n\n".join(parts)
 
 
 def get_tender_url_from_parent() -> Optional[str]:
