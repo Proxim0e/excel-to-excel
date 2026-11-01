@@ -103,14 +103,16 @@ class OfferCheck:
     missing_in_offer: List[str] = field(default_factory=list)  # уровень 1: условие требования не упомянуто
     copy: bool = False                                         # спецификация - копия требования
 
-    def note(self) -> str:
-        """Что дописать в строку 11 после спецификации."""
+    def note(self, only_documents: Optional[set] = None) -> str:
+        """Что дописать в строку 11 после спецификации; only_documents - цитировать только эти
+        документы (колонка уточнений показывает то, что нашлось в присланном)."""
         parts = []
         if not self.has_docs:
             parts.append(NO_DOCS_MARK)
         else:
-            if self.evidence:
-                parts.append(format_evidence(self.evidence))
+            evidence = [e for e in self.evidence if only_documents is None or e.document in only_documents]
+            if evidence:
+                parts.append(format_evidence(evidence))
             if self.missing:
                 parts.append("// " + "; ".join(self.missing[:MAX_MISSING]))
         if self.conflicts:
@@ -133,7 +135,7 @@ def tech_pages(conn: sqlite3.Connection, participant: str, lot: Optional[int]):
     return conn.execute(f"""
         SELECT d.sha256, MIN(r.original_name), p.page_no, p.text
         FROM document_refs r JOIN documents d USING (sha256) JOIN document_pages p USING (sha256)
-        WHERE r.participant = ? {lot_filter}
+        WHERE r.participant = ? {lot_filter} AND r.status <> 'clarificare'
           AND (d.doc_type IN ({doc_ph}) OR p.page_type IN ({page_ph}))
           AND COALESCE(p.page_type, '') NOT IN ('anexa22', 'anexa23')
           AND NOT EXISTS (SELECT 1 FROM anexa22_pages a WHERE a.sha256 = p.sha256 AND a.page_no = p.page_no)
@@ -149,7 +151,7 @@ def parameter_label(spec: str, num: str, unit: str) -> str:
 
 
 def check_offer(conn: sqlite3.Connection, participant: str, lot: int, model: str, spec: str,
-                requirement: str = "") -> OfferCheck:
+                requirement: str = "", extra_pages: Optional[list] = None) -> OfferCheck:
     """
     Уровень 1 (если дано требование лота): условия требования против значений Anexa 22.
     Уровень 2: код модели и параметры из Anexa 22 в технических документах участника по лоту.
@@ -157,24 +159,27 @@ def check_offer(conn: sqlite3.Connection, participant: str, lot: int, model: str
     код модели не найден, ищем в технических документах участника из других лотов.
     Значение из документа, не совпадающее буквально, засчитывается, если укладывается в условие
     требования (требование «≥ 15 cm», в даташите «22 cm») - только на страницах с кодом модели.
+    extra_pages - страницы документов уточнений [(sha, имя, страница, текст)]: участвуют в уровне 2
+    и могут закрыть условия уровня 1 (участник прислал письмо или даташит с нужным значением).
     """
     declared = check_declarative(spec, requirement) if requirement else None
     codes = model_tokens(model)
     values = spec_values(spec)
-    pages = tech_pages(conn, participant, lot)
-    evidence = _search(pages, codes, values) if pages else []
+    extra_pages = list(extra_pages or [])
+    pages = tech_pages(conn, participant, lot) + extra_pages
+    evidence = _search(pages, codes, values, always=extra_pages) if pages else []
     found = {f for ev in evidence for f in ev.found}
     search_pages = pages
     if codes and not any(c in found for c in codes):
         wider = [p for p in tech_pages(conn, participant, None)
                  if any(_alnum(c) in _alnum(p[3]) for c in codes)]
         if wider:
-            evidence = _search(wider, codes, values)
+            evidence = _search(wider, codes, values, always=extra_pages)
             found = {f for ev in evidence for f in ev.found}
             search_pages = wider
     if not evidence and not pages:
         # технических документов по лоту нет, и код модели не нашёлся у участника в других лотах
-        return _with_declared(OfferCheck(YELLOW, has_docs=False), declared)
+        return _with_declared(OfferCheck(YELLOW, has_docs=False), declared, extra_pages)
 
     not_found = [(num, unit) for num, unit in values if f"{num} {unit}" not in found]
     if not_found and requirement and codes:
@@ -190,19 +195,42 @@ def check_offer(conn: sqlite3.Connection, participant: str, lot: int, model: str
     # Светло-зелёный («только декларативно») - для обычных процедур; в централизованных его нет:
     # документы есть и ничего не противоречит - зелёный
     status = YELLOW if missing else GREEN
-    return _with_declared(OfferCheck(status, evidence[:MAX_PAGES], missing), declared)
+    # Цитаты из документов уточнений - первыми: они не должны теряться за лимитом MAX_PAGES
+    extra_names = {name for _, name, _, _ in extra_pages}
+    evidence.sort(key=lambda e: e.document not in extra_names)
+    return _with_declared(OfferCheck(status, evidence[:MAX_PAGES], missing), declared, extra_pages)
 
 
-def _with_declared(check: OfferCheck, declared) -> OfferCheck:
-    """Добавляет итог уровня 1: расхождения и пропуски в Anexa 22 делают ячейку жёлтой."""
+def _with_declared(check: OfferCheck, declared, extra_pages: Optional[list] = None) -> OfferCheck:
+    """Добавляет итог уровня 1: расхождения и пропуски в Anexa 22 делают ячейку жёлтой.
+    Условие закрывается, если в документах уточнений есть значение, которое в него укладывается."""
     if declared is None:
         return check
-    check.conflicts = declared.conflicts
-    check.missing_in_offer = declared.missing
+    resolved = set()
+    for condition, note in (declared.open_conditions or []) if extra_pages else []:
+        ev = _value_for_condition(extra_pages, condition)
+        if ev:
+            resolved.add(note)
+            check.evidence.insert(0, ev)
+    check.conflicts = [n for n in declared.conflicts if n not in resolved]
+    check.missing_in_offer = [n for n in declared.missing if n not in resolved]
     check.copy = declared.copy
-    if declared.conflicts or declared.missing:
+    if not check.has_docs and resolved:
+        check.has_docs = True
+    if check.conflicts or check.missing_in_offer:
         check.status = YELLOW
     return check
+
+
+def _value_for_condition(pages, condition) -> Optional[Evidence]:
+    """Строка документа со значением, которое укладывается в условие требования или пересекается с ним."""
+    for sha, name, pno, text in pages:
+        for line in text.splitlines():
+            for value in parse_constraints(line):
+                if condition.satisfied_by(value) or (value.kind != "exact" and condition.overlaps(value)):
+                    quote = re.sub(r"\s+", " ", line).strip()[:QUOTE_CHARS]
+                    return Evidence(name, pno, [quote], [condition.text])
+    return None
 
 
 def _satisfying_value(pages, num: str, unit: str, requirement: str) -> Optional[Evidence]:
@@ -226,10 +254,13 @@ def find_evidence(conn: sqlite3.Connection, participant: str, lot: int, model: s
     return check_offer(conn, participant, lot, model, spec).evidence
 
 
-def _search(pages, codes: List[str], values: List[Tuple[str, str]]) -> List[Evidence]:
+def _search(pages, codes: List[str], values: List[Tuple[str, str]], always=()) -> List[Evidence]:
+    """always - страницы, которые ищутся всегда, даже без кода модели: документы уточнений уже
+    отобраны по лоту и модели, а письмо-ответ код модели обычно не повторяет."""
     with_model = [(sha, name, pno, text) for sha, name, pno, text in pages
                   if any(_alnum(c) in _alnum(text) for c in codes)]
-    candidates = with_model or pages
+    candidates = with_model or list(pages)
+    candidates += [p for p in always if p not in candidates]
 
     results: Dict[Tuple[str, int], Evidence] = {}
     for sha, name, pno, text in candidates:

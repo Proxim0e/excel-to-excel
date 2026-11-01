@@ -212,6 +212,8 @@ class DeclarativeCheck:
     missing: List[str]         # условия требования без значения в Anexa 22
     copy: bool                 # спецификация - копия требования
     matched: List[Tuple[Constraint, Constraint]]  # (условие требования, значение участника)
+    # Незакрытые условия требования с текстом пометки - их могут закрыть документы уточнений
+    open_conditions: List[Tuple[Constraint, str]] = None
 
 
 def _label_words(text: str) -> set:
@@ -245,7 +247,7 @@ def check_declarative(offered: str, required: str) -> DeclarativeCheck:
     """
     req = parse_constraints(required)
     off = parse_constraints(offered)
-    conflicts, missing, matched = [], [], []
+    conflicts, missing, matched, open_conditions = [], [], [], []
     for c in req:
         same = [o for o in off if o.family == c.family]
         ok = [o for o in same if c.satisfied_by(o) or c.overlaps(o)]
@@ -258,8 +260,11 @@ def check_declarative(offered: str, required: str) -> DeclarativeCheck:
         # иначе это, скорее всего, другой размер того же семейства (диаметр против длины)
         related = [o for o in same if _related(o.text, c.text)]
         if related:
-            conflicts.append(f"{c.text} (A22: {related[0].text})")
+            note = f"{c.text} (A22: {related[0].text})"
+            conflicts.append(note)
         else:
-            missing.append(c.text)  # про этот параметр в Anexa 22 ничего нет («exterior» при «interior»)
+            note = c.text  # про этот параметр в Anexa 22 ничего нет («exterior» при «interior»)
+            missing.append(note)
+        open_conditions.append((c, note))
     return DeclarativeCheck(list(dict.fromkeys(conflicts)), list(dict.fromkeys(missing)),
-                            is_copy(offered, required), matched)
+                            is_copy(offered, required), matched, open_conditions)
