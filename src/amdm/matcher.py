@@ -33,6 +33,16 @@ def norm_company(name: Optional[str]) -> str:
     return re.sub(r'\s+', ' ', s).strip()
 
 
+# Связки не входят в аббревиатуру: ICMN = International Company for Medical Necessities.
+# Формы собственности в конце не мешают: сравнивается начало («jhmscl».startswith(«jhms»))
+_CONNECTORS = {"for", "of", "and", "the", "ve", "de", "la", "si", "und", "e", "y"}
+
+
+def _initials(name: str) -> str:
+    words = [w for w in re.findall(r"[a-z]+", fold(name or "")) if w not in _CONNECTORS]
+    return "".join(w[0] for w in words)
+
+
 def producer_matches(offered: Optional[str], registered: Optional[str]) -> Tuple[bool, float]:
     a, b = norm_company(offered), norm_company(registered)
     if not a or not b:
@@ -44,6 +54,17 @@ def producer_matches(offered: Optional[str], registered: Optional[str]) -> Tuple
     common = {t for t in ta & tb if len(t) >= 4}
     if common:
         return True, 0.9
+    # аббревиатура: «JHMS» = Jiangxi Hawk Medical Supplies, «MIR» = Medical International Research
+    short = re.sub(r"[^a-z]", "", fold(offered or ""))
+    acronym = re.sub(r"[^a-z]", "", a)
+    if 3 <= len(acronym) <= 6 and _initials(registered).startswith(acronym):
+        return True, 0.85
+    # опечатка или транслитерация в начале названия: «Aqumedical» - «AQUA MEDIKAL TIBBI ...»
+    reg = re.sub(r"[^a-z]", "", fold(registered or ""))
+    if len(short) >= 6:
+        head = difflib.SequenceMatcher(None, short, reg[:len(short) + 2]).ratio()
+        if head >= 0.8:
+            return True, head
     ratio = difflib.SequenceMatcher(None, a, b).ratio()
     return ratio >= 0.75, ratio
 
@@ -57,22 +78,58 @@ def model_matches(offered: Optional[str], record: RegistryRecord) -> Tuple[Optio
     if not offered or not haystack_raw:
         return None, ""
     hay = compact(haystack_raw)
+    offered_compact = compact(offered)
+    # Значения полей реестра по отдельности: «SD-T, SD-L, SD-Y» - три кода семейства
+    items = [(i.strip(), f) for f in (record.model, record.catalog) if f for i in re.split(r"[,;]", f) if i.strip()]
+    sizes = _numbers(offered)
+    for item, field in items:
+        c = compact(item)
+        # тот же код целиком, в том числе без цифр: «GS» - «GS»
+        if c and c == offered_compact:
+            return True, item
+        # регистрация на семейство или код без цифр внутри оферты: «SD-T» в «SD-T 1024230», «DI-HL» в
+        # «DI-HL 25X30 CM». Код из одних букв - от 5 символов и из двух частей и более
+        # («E.O.S. DEV.», «Ortho CP GU M»): одно слово («RULOU») - не код.
+        letters_code = len(c) >= 5 and len(re.findall(r"[A-Za-z0-9]+", item)) >= 2
+        if (letters_code or (len(c) >= 3 and re.search(r"[\d\-]", item))) and c in offered_compact:
+            # размеры, если указаны с обеих сторон (в значении или в поле реестра), должны совпасть
+            field_sizes = _numbers(item) or _numbers(field)
+            if not (len(field_sizes) >= 2 and len(sizes) >= 2 and field_sizes != sizes):
+                return True, item
     tokens = model_tokens(offered)
     for tok in tokens:
         c = compact(tok)
         if len(c) >= 3 and c in hay:
             return True, tok
+    if tokens and not items and not record.trade_name:
+        # в записи реестра только общее название («ACCESORII RESPIRATORII») - код сравнивать не с чем
+        return None, ""
     # и наоборот: код из реестра внутри текста оферты ('8250731SP' в 'Ref.N8250731SP')
-    offered_compact = compact(offered)
     for code in model_tokens(" ".join(x for x in (record.model, record.catalog) if x)):
         c = compact(code)
         if len(c) >= 4 and c in offered_compact:
             return True, code
+    # Модель описана размерами («80 MM X 20 M, RULOU»): совпали числа с полем реестра - та же модель,
+    # не совпали - другая («56 X 18» против «80 X 30»)
+    # артикул - буквы с цифрами («PFS01-01523230»), но не число с единицей («110mm», «200P»)
+    is_article = any(re.search(r"[a-z]", t, re.I) and re.search(r"\d", t)
+                     and not re.fullmatch(r"\d+(?:[.,]\d+)?[a-z]{1,3}", t, re.I) for t in tokens)
+    if len(sizes) >= 2 and not is_article:
+        for field in (record.model, record.trade_name, record.catalog):
+            field_sizes = _numbers(field)
+            if len(field_sizes) >= 2:
+                return (True, field) if field_sizes == sizes else (False, f"dimensiuni {offered}")
     if tokens:
         return False, ", ".join(tokens[:4])
-    # кодов нет, только слова: мягкое сравнение текста
-    ratio = difflib.SequenceMatcher(None, fold(offered), fold(haystack_raw)).ratio()
+    # кодов нет, только слова: мягкое сравнение текста - с каждым полем отдельно и со всеми вместе
+    texts = [x for x in (record.model, record.trade_name, record.catalog, record.name) if x] + [haystack_raw]
+    ratio = max(difflib.SequenceMatcher(None, fold(offered), fold(t)).ratio() for t in texts)
     return (True, offered) if ratio >= 0.6 else (None, "")
+
+
+def _numbers(text: Optional[str]) -> List[str]:
+    """Числа текста как размеры: «80 MM X 20 M» -> ['20', '80'] (порядок не важен)."""
+    return sorted(n.replace(",", ".").lstrip("0") or "0" for n in re.findall(r"\d+(?:[.,]\d+)?", text or ""))
 
 
 def check_offer(offer: OfferRegistration, records: dict, site_checked: set) -> List[CheckResult]:

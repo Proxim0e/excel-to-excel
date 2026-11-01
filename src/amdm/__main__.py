@@ -26,6 +26,7 @@ from pathlib import Path
 
 from src.config import RESOURCE_DIR
 from src.amdm.cache import RegistryCache
+from src.amdm.mark import mark_workbook
 from src.amdm.matcher import check_offer
 from src.amdm.report import write_report
 from src.amdm.workbook import load_workbook_tolerant, read_offers
@@ -84,6 +85,8 @@ def cmd_check(args) -> int:
 
     results = [r for o in offers for r in check_offer(o, records, site_checked)]
     write_report(wb, results)
+    marked = mark_workbook(wb, results)
+    logger.info("Листы лотов: строка 4 и цвета - " + ", ".join(f"{k}: {v}" for k, v in sorted(marked.items())))
     out = Path(args.out) if args.out else src.with_name(src.stem + "_AMDM.xlsx")
     wb.save(out)
 

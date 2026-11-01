@@ -176,6 +176,19 @@ class PlaywrightFetcher:
         return out
 
     # --- поиск ------------------------------------------------------------------
+    EMPTY_ROW_SELECTORS = [GRID + " tr[id*='DXEmptyRow']", GRID + " tr.dxgvEmptyDataRow"]
+    FILTER_WAIT = 20.0   # сек: сколько ждать перерисовки таблицы после фильтра
+
+    def _first_dm(self) -> Optional[str]:
+        rows = self._first(self.DATA_ROW_SELECTORS)
+        if rows is None or not rows.count():
+            return None
+        return normalize_dm(rows.nth(0).locator(":scope > td").first.inner_text())
+
+    def _empty_shown(self) -> bool:
+        loc = self._first(self.EMPTY_ROW_SELECTORS)
+        return bool(loc is not None and loc.count() and loc.first.is_visible())
+
     def lookup(self, dm: str) -> Optional[RegistryRecord]:
         time.sleep(self.delay + random.uniform(0, 0.6))
         cells = self._first(self.FILTER_INPUT_SELECTORS)
@@ -183,11 +196,19 @@ class PlaywrightFetcher:
             raise RuntimeError("Не нашёл строку фильтров таблицы. Запусти `python -m src.amdm probe`.")
         idx = self._columns.index("dm")
         box = cells.nth(idx).locator("input").first
-        box.fill("")
-        box.fill(dm)
+        # Таблица DevExpress фильтрует по событиям клавиатуры: fill() вставляет значение без них,
+        # и фильтр не срабатывает (проверено 01.11.2026). Поэтому - ввод по символам и Enter.
+        box.click()
+        box.press("Control+A")
+        box.press("Backspace")
+        box.press_sequentially(dm, delay=40)
         box.press("Enter")
-        self._page.wait_for_load_state("networkidle", timeout=60000)
-        time.sleep(1.0)  # колбэк DevExpress перерисовывает таблицу после networkidle
+        # Ждём, пока таблица перерисуется: первой строкой станет искомый номер или «нет данных»
+        deadline = time.time() + self.FILTER_WAIT
+        while time.time() < deadline:
+            time.sleep(0.5)
+            if self._first_dm() == dm or self._empty_shown():
+                break
         for values in self._rows():
             rec = record_from_row(values)
             if rec and rec.dm == dm:
