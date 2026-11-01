@@ -80,6 +80,35 @@ CREATE TABLE IF NOT EXISTS clarifications (
     color       TEXT
 );
 
+-- Ответы человека на вопросы («спросить один раз»). Привязаны к самому вопросу (текст и цвет строки 1):
+-- если человек потом поменял ячейку в Excel, ответ к новому состоянию не применяется
+CREATE TABLE IF NOT EXISTS answers (
+    tender_id   TEXT NOT NULL,
+    lot_no      INTEGER NOT NULL,
+    participant TEXT NOT NULL,
+    row1_text   TEXT,
+    row1_color  TEXT,
+    decision    TEXT NOT NULL,
+    reason      TEXT,
+    comment     TEXT,
+    answered_at TEXT NOT NULL,
+    PRIMARY KEY (tender_id, lot_no, participant)
+);
+
+-- Текущее состояние: последний снимок каждого тендера + ответы человека поверх расшифровки
+CREATE VIEW IF NOT EXISTS current_offers AS
+SELECT s.tender_id, o.*,
+       CASE WHEN a.decision IS NOT NULL THEN a.decision ELSE o.decision END AS final_decision,
+       CASE WHEN a.decision IS NOT NULL THEN a.reason ELSE o.reason END     AS final_reason,
+       CASE WHEN a.decision IS NOT NULL THEN NULL ELSE o.needs_review END  AS open_question,
+       CASE WHEN a.decision IS NOT NULL THEN 'human' ELSE 'codebook' END   AS decision_source,
+       a.comment AS answer_comment
+FROM offers o
+JOIN snapshots s ON s.id = o.snapshot_id
+LEFT JOIN answers a ON a.tender_id = s.tender_id AND a.lot_no = o.lot_no AND a.participant = o.participant
+     AND a.row1_text IS o.row1_text AND a.row1_color IS o.row1_color
+WHERE s.id = (SELECT MAX(id) FROM snapshots s2 WHERE s2.tender_id = s.tender_id);
+
 CREATE TABLE IF NOT EXISTS events (
     id          INTEGER PRIMARY KEY,
     tender_id   TEXT NOT NULL,

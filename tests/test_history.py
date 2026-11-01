@@ -58,7 +58,9 @@ def fill(color):
     return PatternFill("solid", fgColor=color)
 
 
-class ImportTests(unittest.TestCase):
+class ImportFixture(unittest.TestCase):
+    """Рабочий Excel с одним листом лота и база знаний во временной папке (без тестов)."""
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
@@ -88,6 +90,8 @@ class ImportTests(unittest.TestCase):
         ws.sheet_properties.tabColor = d.GREEN
         wb.save(self.xlsx)
 
+
+class ImportTests(ImportFixture):
     def test_import_reads_lot_and_offers(self):
         r = import_workbook(self.conn, self.xlsx)
         self.assertEqual((r["tender_id"], r["lots"], r["offers"]), ("21641880", 1, 2))
@@ -117,6 +121,64 @@ class ImportTests(unittest.TestCase):
         self.assertEqual(changes[("Electeh SRL", "decision")], ("accepted", "rejected"))
         self.assertEqual(changes[("Electeh SRL", "reason")], (None, "guarantee_insufficient"))
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM snapshots").fetchone()[0], 2)
+
+
+class ReviewTests(ImportFixture):
+    """Вопрос (красный «Tehnic corespunde») -> ответ человека -> повторный импорт."""
+
+    def setUp(self):
+        super().setUp()
+        self.save(electeh_color=d.RED, electeh_text="Tehnic corespunde")
+        import_workbook(self.conn, self.xlsx)
+        from src.history import review
+        self.review = review
+        self.path = self.root / "review.xlsx"
+
+    def answer_electeh(self, decision, comment=None):
+        from openpyxl import load_workbook
+        wb = load_workbook(self.path)
+        ws = wb[self.review.SHEET]
+        for row in ws.iter_rows(min_row=2):
+            if row[3].value == "Electeh SRL":
+                row[9].value, row[11].value = decision, comment
+        wb.save(self.path)
+        return self.review.apply_review(self.conn, self.path)
+
+    def current(self):
+        return self.conn.execute("SELECT final_decision, decision_source, open_question FROM current_offers "
+                                 "WHERE participant = 'Electeh SRL'").fetchone()
+
+    def test_question_answer_cycle(self):
+        self.assertEqual(self.review.export_review(self.conn, "21641880", self.path), 1)
+        self.assertEqual(self.answer_electeh("excluded", "ошибка разметки"), (1, []))
+        self.assertEqual(self.current(), ("excluded", "human", None))
+        self.assertEqual(self.review.export_review(self.conn, "21641880", self.path), 0)  # спрошено один раз
+
+    def test_answer_survives_reimport_of_unchanged_cell(self):
+        self.review.export_review(self.conn, "21641880", self.path)
+        self.answer_electeh("accepted")
+        # Excel правился, но не ячейка строки 1 Electeh - ответ остаётся в силе
+        from openpyxl import load_workbook
+        wb = load_workbook(self.xlsx)
+        wb["lot 29"]["H11"] = "заметка после апелляции"
+        wb.save(self.xlsx)
+        self.assertFalse(import_workbook(self.conn, self.xlsx)["skipped"])
+        self.assertEqual(self.current(), ("accepted", "human", None))
+
+    def test_changed_cell_makes_answer_stale(self):
+        self.review.export_review(self.conn, "21641880", self.path)
+        self.answer_electeh("accepted")
+        self.save(electeh_color=d.RED, electeh_text="Tehnic corespunde (revizuit)")  # человек поменял ячейку
+        import_workbook(self.conn, self.xlsx)
+        decision, source, question = self.current()
+        self.assertEqual(source, "codebook")
+        self.assertIsNotNone(question)
+
+    def test_unknown_decision_reported(self):
+        self.review.export_review(self.conn, "21641880", self.path)
+        saved, errors = self.answer_electeh("da")
+        self.assertEqual(saved, 0)
+        self.assertIn("неизвестное решение", errors[0])
 
 
 if __name__ == "__main__":
