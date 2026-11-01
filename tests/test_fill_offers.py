@@ -222,6 +222,44 @@ class FillTests(unittest.TestCase):
         fo.fill_result(self.xlsx, self.root)
         self.assertEqual(load_workbook(self.xlsx)["lot 2"]["E11"].fill.fgColor.rgb, fo.COLORS[ev.GREEN])
 
+    def set_prices(self, base, **values):
+        wb = load_workbook(self.xlsx)
+        ws = wb["lot 2"]
+        ws["D8"] = base
+        for addr, v in values.items():
+            ws[addr] = v
+        wb.save(self.xlsx)
+
+    def test_price_over_130_percent_is_rejected(self):
+        self.set_prices(1000, E8=1300)  # ровно 130% - уже отклонение
+        stats = fo.fill_result(self.xlsx, self.root)
+        ws = load_workbook(self.xlsx)["lot 2"]
+        self.assertEqual(stats["price_130"], 1)
+        self.assertEqual((ws["E1"].value, ws["E1"].fill.fgColor.rgb), ("0.3", "FFFF0000"))
+        self.assertEqual(ws.sheet_properties.tabColor.rgb, "FFFF0000")  # единственный участник - лот не присуждён
+
+    def test_tab_by_remaining_participants(self):
+        wb = load_workbook(self.xlsx)
+        ws = wb["lot 2"]
+        ws["E2"], ws["F2"] = "Ofertant: Labromed Laborator SRL", "Ofertant: SOGNO"  # SOGNO в F
+        wb.save(self.xlsx)
+        conn = sqlite3.connect(self.root / MANIFEST_NAME)
+        conn.execute("INSERT INTO anexa22_offers (sha256, page_no, participant, lot_no, model, producer, spec_offered, "
+                     "parsed_at) VALUES ('a22', 1, 'Labromed Laborator SRL', 2, 'X', 'Y', 'Manseta 500 ml', 'now')")
+        conn.commit()
+        conn.close()
+        self.set_prices(1000, E8=1500, F8=900)  # Labromed 150% - отклонён; SOGNO подтверждён
+        fo.fill_result(self.xlsx, self.root)
+        ws = load_workbook(self.xlsx)["lot 2"]
+        self.assertEqual(ws["E1"].value, "0.3")
+        self.assertEqual(ws.sheet_properties.tabColor.rgb, fo.COLORS[ev.GREEN])
+
+    def test_below_limit_untouched(self):
+        self.set_prices(1000, E8=1299)
+        stats = fo.fill_result(self.xlsx, self.root)
+        self.assertEqual(stats.get("price_130", 0), 0)
+        self.assertEqual(load_workbook(self.xlsx)["lot 2"]["E1"].value, "Tehnic    corespunde ")
+
     def test_dm_cell_prefers_dm_numbers(self):
         rec = {"dm": ["DM000466393,DM000466394"], "standards": ["CE/DM000466393"]}
         self.assertEqual(fo.dm_cell(rec), "DM000466393\nDM000466394")

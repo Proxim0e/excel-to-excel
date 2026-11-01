@@ -9,6 +9,8 @@
               нет технических документов - //docs, не найден параметр - // <параметр>.
 Ячейка строки 11 красится по итогу уровней 1-2 (жёлтый - нужны уточнения, зелёный - подтверждено),
 тот же статус дублируется в строке 1 участника («Tehnic corespunde»), вкладка листа - по худшему участнику.
+Цена ≥ 130% базы (PERCENT_THRESHOLD) - отклонение по закону: строка 1 красная, текст «0.3» (как у человека);
+вкладка - по остальным участникам, а если так у всех - красная (лот не присуждён).
 Пишется только в пустые ячейки (или в шаблон с пустыми подписями) - ничего не затирается; выравнивание
 шаблона сохраняется (строка 3 по центру). Перекрашиваются только шаблонные цвета: голубая заливка
 строки 1 и зелёная вкладка; «не состоялась» (тёмно-синий) не трогается.
@@ -31,12 +33,15 @@ from openpyxl.styles import Alignment, PatternFill
 from src.anexa22.evaluate import participant_key
 from src.anexa22.evidence import GREEN, YELLOW, check_offer
 from src.anexa22.gold import parse_row3
+from src.config import PERCENT_THRESHOLD
 from src.manifest import MANIFEST_NAME
 
 logger = logging.getLogger(__name__)
 
 FIRST_PARTICIPANT_COL = 5   # E
-ROW_STATUS, ROW_NAME, ROW_PRODUCER, ROW_DM, ROW_SPEC = 1, 2, 3, 4, 11
+ROW_STATUS, ROW_NAME, ROW_PRODUCER, ROW_DM, ROW_VALUE, ROW_SPEC = 1, 2, 3, 4, 8, 11
+# Цена ≥ PERCENT_THRESHOLD (130%) базы - автоматическое отклонение по закону; разметка как у человека
+PRICE_REJECTED, PRICE_REJECTED_COLOR, PRICE_REJECTED_TEXT = "price_130", "FFFF0000", "0.3"
 SHEET_RE = re.compile(r"lot\s*(\d+)", re.IGNORECASE)
 EXCEL_CELL_LIMIT = 32767
 SPEC_ALIGNMENT = Alignment(wrap_text=True, vertical="top")  # длинную спецификацию читать слева сверху
@@ -46,7 +51,7 @@ COLORS = {GREEN: "FF00B050", YELLOW: "FFFFFF00"}
 # Вкладка листа: хоть один участник требует уточнений - жёлтая; все подтверждены - зелёная.
 # Шаблон уже красит вкладки в зелёный, поэтому сохраняем только осмысленные цвета («не состоялась»).
 TAB_PRIORITY = (YELLOW, GREEN)
-KEEP_TAB_COLORS = {"FF001F4D", "001F4D"}
+KEEP_TAB_COLORS = {"FF001F4D", "001F4D", "00001F4D"}
 # Строка 1 участника: шаблон даёт голубую заливку («Tehnic corespunde») - её заменяем цветом статуса,
 # другие цвета ставил человек и их не трогаем
 TEMPLATE_STATUS_FILLS = {None, "00000000", "FF00B0F0", "00B0F0"}
@@ -122,6 +127,33 @@ def _mark_status(ws, col: int, status: str, template_text: str) -> None:
     cell.fill = _fill(status)
 
 
+def price_ratio(ws, col: int) -> Optional[float]:
+    """Сумма участника (строка 8) / база (D8); формулы строки 9 в сгенерированном файле не посчитаны."""
+    value, base = ws.cell(row=ROW_VALUE, column=col).value, ws.cell(row=ROW_VALUE, column=4).value
+    if isinstance(value, (int, float)) and isinstance(base, (int, float)) and base:
+        return value / base
+    return None
+
+
+def _mark_price_limit(ws, col: int, template_text: str) -> bool:
+    """Цена ≥ 130% базы - автоматическое отклонение по закону (кодбук): строка 1 красная, текст «0.3».
+    Текст и цвет, поставленные человеком, не трогаются."""
+    ratio = price_ratio(ws, col)
+    if ratio is None or ratio < PERCENT_THRESHOLD:
+        return False
+    cell = ws.cell(row=ROW_STATUS, column=col)
+    current = cell.fill.fgColor.rgb if cell.fill is not None and cell.fill.fill_type == "solid" else None
+    if str(current).upper() not in {str(c).upper() for c in TEMPLATE_STATUS_FILLS}:
+        return True  # цвет уже поставил человек
+    if not cell.value or str(cell.value).strip() == str(template_text).strip():
+        cell.value = PRICE_REJECTED_TEXT
+        source = ws.cell(row=ROW_STATUS, column=FIRST_PARTICIPANT_COL)
+        if source.has_style and source.column != col:
+            cell.font, cell.alignment, cell.border = copy(source.font), copy(source.alignment), copy(source.border)
+    cell.fill = PatternFill("solid", fgColor=PRICE_REJECTED_COLOR)
+    return True
+
+
 def fill_result(result_path: Path, tender_dir: Path, out_path: Optional[Path] = None,
                 evidence: bool = True) -> dict:
     """Заполняет строки 3, 4, 11 листов лотов. Возвращает статистику."""
@@ -152,6 +184,11 @@ def fill_result(result_path: Path, tender_dir: Path, out_path: Optional[Path] = 
                 if not participant:  # «Ofertant:» без имени - лот без участников
                     continue
                 stats["participants"] += 1
+                # цена от Anexa 22 не зависит - проверяется у всех участников
+                price_rejected = _mark_price_limit(ws, col, status_text)
+                if price_rejected:
+                    stats["price_130"] += 1
+                    statuses.append(PRICE_REJECTED)
                 rec = offers.get((lot, participant_key(participant)))
                 if not rec:
                     missing.append(f"lot {lot}: {participant}")
@@ -175,10 +212,15 @@ def fill_result(result_path: Path, tender_dir: Path, out_path: Optional[Path] = 
                     if check:
                         ws.cell(row=ROW_SPEC, column=col).fill = _fill(check.status)
                         _mark_status(ws, col, check.status, status_text)
-                        statuses.append(check.status)
+                        if not price_rejected:  # отклонённый по цене не влияет на вкладку
+                            statuses.append(check.status)
             tab = ws.sheet_properties.tabColor
             if statuses and not (tab is not None and str(tab.rgb).upper() in KEEP_TAB_COLORS):
-                ws.sheet_properties.tabColor = COLORS[next(s for s in TAB_PRIORITY if s in statuses)]
+                # участники с ценой ≥ 130% отклонены по закону; вкладка - по остальным, а если
+                # отклонены все - лот не присуждён (красная)
+                rest = [s for s in statuses if s != PRICE_REJECTED]
+                ws.sheet_properties.tabColor = (COLORS[next(s for s in TAB_PRIORITY if s in rest)] if rest
+                                                else PRICE_REJECTED_COLOR)
         wb.save(out_path or result_path)
     finally:
         conn.close()
@@ -203,6 +245,7 @@ def main(argv=None) -> int:
           f"строка 11 - {stats.get('row11', 0)} (из них с цитатами из документов: {stats.get('evidence', 0)})")
     print(f"Уровни 1-2: зелёный - {stats.get(GREEN, 0)}, "
           f"жёлтый - {stats.get(YELLOW, 0)} (из них без технических документов: {stats.get('no_docs', 0)})")
+    print(f"Цена ≥ {PERCENT_THRESHOLD:.0%} базы (отклонение по закону, строка 1 «0.3»): {stats.get('price_130', 0)}")
     print(f"Уровень 1: расхождения с требованием - {stats.get('conflicts', 0)}, условия требования не "
           f"упомянуты в A22 - {stats.get('missing_in_offer', 0)}, спецификация - копия требования - "
           f"{stats.get('copy', 0)}")

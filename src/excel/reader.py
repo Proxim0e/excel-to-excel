@@ -1,9 +1,12 @@
+import logging
 import re
 from typing import Dict, List, Optional, Any
 from pathlib import Path
 from openpyxl import load_workbook
 
 from src.config import RESOURCE_DIR, COLS
+
+logger = logging.getLogger(__name__)
 
 
 def find_parent_file() -> Path:
@@ -46,6 +49,7 @@ def get_parent_data() -> Dict[int, Dict[str, Any]]:
         raise ValueError("Column 'Nr. Lot' not found in parent file headers")
 
     lot_data = {}
+    positions: Dict[int, int] = {}  # лот -> число позиций, если больше одной
 
     for row in ws.iter_rows(min_row=2, values_only=True):
         nr_lot_val = row[col_indices['nr_lot'] - 1]
@@ -68,7 +72,22 @@ def get_parent_data() -> Dict[int, Dict[str, Any]]:
             else:
                 data[key] = None
 
+        if nr_lot in lot_data:
+            # Лот из нескольких позиций: строки с тем же номером лота (в 21641880 - лоты 184-201, 279:
+            # тест-индикатор + журнал REGISTRU; лот 69 - 9 позиций). Сумма лота (suma alocată) - только
+            # в первой строке. Раньше бралась последняя позиция, и сумма лота терялась (D8 = 0): данные
+            # лота - по первой позиции, пустые значения следующих её не затирают.
+            positions[nr_lot] = positions.get(nr_lot, 1) + 1
+            first = lot_data[nr_lot]
+            for k, v in data.items():
+                if first.get(k) in (None, "") and v not in (None, ""):
+                    first[k] = v
+            continue
         lot_data[nr_lot] = data
+
+    if positions:
+        logger.info(f"Лоты из нескольких позиций (данные лота - по первой позиции): "
+                    f"{', '.join(f'{lot} ({n})' for lot, n in sorted(positions.items()))}")
 
     return lot_data
 
