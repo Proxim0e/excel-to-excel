@@ -2,8 +2,11 @@ beautifulsoup4==4.14.2
 certifi==2025.11.12
 charset-normalizer==3.4.4
 et_xmlfile==2.0.0
+greenlet==3.5.6
 idna==3.11
 openpyxl==3.1.5
+playwright==1.64.1
+pyee==14.0.0
 PyMuPDF==1.26.7
 requests==2.33.1
 soupsieve==2.8
