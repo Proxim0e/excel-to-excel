@@ -6,7 +6,7 @@
 Название папки сопоставляется с участником тендера («Electeh» -> «Electeh SRL»).
 
 Что делается:
-  1. Документы попадают в манифест тендера (status = 'clarificare', url = 'clarificari/runda N'),
+  1. Документы попадают в манифест тендера (status = 'clarificare', url = 'clarificari/runda N/<папка>/<файл>'),
      классифицируются и читаются как обычные; обычная проверка (этап 3) их не видит.
   2. Для каждого лота, где у этой компании жёлтая строка 11, проверка повторяется с новыми
      документами: все их страницы (ответ часто приходит письмом, а не даташитом) участвуют в поиске
@@ -107,8 +107,11 @@ def ingest(tender_dir: Path, clar_dir: Path, round_no: Optional[int] = None) -> 
                 unmatched.append(folder.name)
                 continue
             for path in sorted(folder.rglob("*.pdf")):
+                # url у каждого файла свой: манифест кэширует sha256 по url, с общим url раунда все файлы
+                # получили бы хеш первого и читался бы только он
+                url = f"{ROUND_URL.format(round_no)}/{path.relative_to(clar_dir).as_posix()}"
                 manifest.record(tender_id=tender_id, lot_no=None, lot_title=None, participant=participant,
-                                original_name=path.name, url=ROUND_URL.format(round_no), path=path, status=STATUS)
+                                original_name=path.name, url=url, path=path, status=STATUS)
                 files[participant].append(path.name)
     finally:
         manifest.close()
@@ -153,9 +156,9 @@ def clarification_pages(conn: sqlite3.Connection, participant: str, round_no: in
     return conn.execute("""
         SELECT p.sha256, MIN(r.original_name), p.page_no, p.text
         FROM document_refs r JOIN document_pages p USING (sha256)
-        WHERE r.participant = ? AND r.status = ? AND r.url = ?
+        WHERE r.participant = ? AND r.status = ? AND (r.url = ? OR r.url LIKE ?)
         GROUP BY p.sha256, p.page_no ORDER BY MIN(r.original_name), p.page_no""",
-                        (participant, STATUS, ROUND_URL.format(round_no))).fetchall()
+                        (participant, STATUS, ROUND_URL.format(round_no), ROUND_URL.format(round_no) + "/%")).fetchall()
 
 
 def _fill_rgb(cell) -> Optional[str]:

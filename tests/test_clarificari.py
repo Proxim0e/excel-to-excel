@@ -135,6 +135,21 @@ class RoundTests(unittest.TestCase):
         self.assertTrue(ws["F11"].value.startswith(clar.NOTHING_FOUND))
         self.assertEqual(ws["F11"].fill.fgColor.rgb, fo.COLORS["yellow"])
 
+    def test_every_file_of_company_is_read(self):
+        # Первый по алфавиту файл ничего не подтверждает, ответ - во втором (тендер 21643233: из 89 файлов
+        # читался только первый, у всех был его sha256)
+        (self.clar / "Sogno" / "raspuns.pdf").rename(self.clar / "Sogno" / "z_raspuns.pdf")
+        (self.clar / "Sogno" / "a_scrisoare.pdf").write_bytes(b"%PDF-scrisoare")
+        texts = {"z_raspuns.pdf": ["Raspuns la clarificari pentru lotul 2: lungime furtun 120 cm"],
+                 "a_scrisoare.pdf": ["Scrisoare de insotire"]}
+        with mock.patch.object(cl, "extract_pages", side_effect=lambda path: texts.get(Path(path).name, [""])):
+            stats = clar.recheck_result(self.xlsx, self.tender, self.clar)
+        conn = sqlite3.connect(self.tender / MANIFEST_NAME)
+        shas = {r[0] for r in conn.execute("SELECT sha256 FROM document_refs WHERE status = ?", (clar.STATUS,))}
+        conn.close()
+        self.assertEqual(len(shas), 2)
+        self.assertEqual(stats.get("green"), 1)
+
     def test_clarifications_invisible_to_regular_check(self):
         clar.recheck_result(self.xlsx, self.tender, self.clar)
         from src.anexa22.evidence import tech_pages
