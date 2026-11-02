@@ -312,6 +312,14 @@ def _to_offers(records, offers: List[Offer], participant: str, sha: str, pno: in
     new: List[Offer] = []
     for rec in records:
         previous = new[-1] if new else (offers[-1] if offers else None)
+        # Только кусок названия на новой странице («INMATEC GaseTechnologie GmbH») - тоже перенос:
+        # у настоящей оферты есть модель, производитель или спецификация
+        name_only = set(rec) <= {"item_name", "lot_name"}
+        if previous and pno not in previous.pages and name_only:
+            for k, v in rec.items():
+                previous.fields[k] = f"{previous.fields[k]} {v}" if previous.fields.get(k) else v
+            previous.pages.add(pno)
+            continue
         if previous and not any(rec.get(k) for k in KEY_FIELDS) and not rec.get("section_lot"):
             for k, v in rec.items():
                 previous.fields[k] = f"{previous.fields[k]} {v}" if previous.fields.get(k) else v
@@ -383,4 +391,121 @@ def parse_tender(tender_dir: Path) -> List[Offer]:
             offers.extend(parse_document(Path(path), pages, participant, sha, lot_by_code))
         except Exception as e:  # один битый PDF не должен останавливать разбор тендера
             logger.warning(f"[ANEXA22] Не удалось разобрать {path}: {type(e).__name__} - {e}")
+    offers = [o for o in offers if not _is_junk(o)]
+    conn = sqlite3.connect(Path(tender_dir) / MANIFEST_NAME)
+    try:
+        resolve_lots(offers, conn, Path(tender_dir))
+    finally:
+        conn.close()
     return offers
+
+
+# Строки таблицы, которые не являются офертой: продолжение шапки «Bunuri/servicii», итог «TOTAL»
+JUNK_NAMES = {"bunuriservicii", "bunuriserviciii", "total", "totalul"}
+
+
+SECTION_NAME_RE = re.compile(r"((total\s*)?lot(ul)?\s*(nr\.?|№)?\s*\d{1,3}\s*)+", re.IGNORECASE)
+
+
+def _is_junk(offer: Offer) -> bool:
+    name = _clean(offer.get("item_name") or offer.get("lot_name"))
+    if _letters(name) in JUNK_NAMES:
+        return True
+    # Заголовок раздела «Lotul 269» / итог «Total lot 269» без модели и спецификации; лот у оферт ниже
+    # уже проставлен из него (section_lot). Производитель не в счёт: в итог переносится хвост
+    # предыдущей строки («... Co., Ltd» -> «Ltd»)
+    return bool(SECTION_NAME_RE.fullmatch(normalize(name))) and not any(
+        offer.get(f) for f in ("model", "spec_offered"))
+
+
+def _title_key(text: str) -> str:
+    """Название без «Lot nr. 340» и всего, кроме букв и цифр: для сравнения с названием лота."""
+    text = re.sub(r"^\s*lot(?:ul)?\s*(?:nr\.?|№)?\s*\d{1,3}\s*[-.:]?\s*", "", normalize(text or ""))
+    return re.sub(r"[^a-z0-9]", "", text)
+
+
+def _lot_titles(conn: sqlite3.Connection, tender_dir: Optional[Path]) -> Tuple[Dict[int, str], set]:
+    """Номер лота -> название. Из манифеста (полное), иначе из имени папки «Lot nr. 523 Lama pentru..tor)»:
+    участник мог загрузить документы только в один лот, и папки остальных его лотов пустые.
+    Возвращает ещё множество лотов, у которых название - обрезанное начало (из папки)."""
+    titles: Dict[int, str] = {}
+    truncated = set()
+    if tender_dir and tender_dir.is_dir():
+        for d in tender_dir.iterdir():
+            m = re.match(r"lot\s*nr\.?\s*(\d+)\s+(.*)", d.name, re.IGNORECASE)
+            if d.is_dir() and m:
+                lot, title = int(m.group(1)), m.group(2)
+                if ".." in title:
+                    title = title.split("..", 1)[0]
+                    truncated.add(lot)
+                titles[lot] = title
+    for lot_no, title in conn.execute("SELECT DISTINCT lot_no, lot_title FROM document_refs WHERE lot_no IS NOT NULL"):
+        if title:
+            titles[lot_no] = title
+            truncated.discard(lot_no)
+    return titles, truncated
+
+
+EXACT_SCORE = 0.99   # точное совпадение названия (или начала обрезанного имени папки)
+
+
+def _name_score(name: str, title: str, truncated: bool = False) -> float:
+    """Похожесть наименования из Anexa 22 на название лота (оба - _title_key)."""
+    from difflib import SequenceMatcher
+
+    if truncated:  # обрезанное имя папки: известно только начало, его совпадение считаем точным
+        return EXACT_SCORE if len(title) >= 10 and name.startswith(title) else 0.0
+    if name == title:
+        return 1.0
+    if title.startswith(name) or name.startswith(title):
+        return 0.95
+    return SequenceMatcher(None, name, title).ratio()
+
+
+def resolve_lots(offers: List[Offer], conn: sqlite3.Connection, tender_dir: Optional[Path] = None) -> None:
+    """
+    Дописывает лот офертам, где его не удалось взять из таблицы:
+      - «Lotul nr. 130 - Lot nr. 398 ...»: из нескольких номеров берётся номер лота этого тендера
+        (130 - внутренняя нумерация участника);
+      - таблица без номера лота и CPV: лот ищется по наименованию - сначала среди лотов участника,
+        затем среди всех лотов тендера, но только при точном совпадении названия.
+    """
+    titles, truncated = _lot_titles(conn, tender_dir)
+    keys = {lot: _title_key(t) for lot, t in titles.items()}
+    lots_of: Dict[str, set] = {}
+    for lot_no, participant in conn.execute(
+            "SELECT DISTINCT lot_no, participant FROM document_refs WHERE lot_no IS NOT NULL"):
+        lots_of.setdefault(participant, set()).add(lot_no)
+
+    for o in offers:
+        if o.lot in titles:
+            continue
+        text = " ".join(normalize(o.get(f)) for f in ("lot", "lot_name", "item_name"))
+        found = [int(n) for n in LOT_TEXT_RE.findall(text) if int(n) in titles]
+        if found:
+            o.lot = found[0]
+
+    # Проходы от надёжного к приблизительному: точное название среди лотов участника, точное среди
+    # всех лотов (папки лотов участника бывают пустыми - документы загружены в другой лот), похожее
+    # среди лотов участника. Иначе «Electrod pasiv din silicon...» уходит в лот «Electrod pasiv».
+    # Свободные лоты в приоритете: одинаковые названия (два лота «Centre disc Dialog+») - по порядку строк
+    taken = {(o.participant, o.lot) for o in offers if o.lot is not None}
+    passes = ((lambda o: lots_of.get(o.participant, ()), EXACT_SCORE),
+              (lambda o: titles, EXACT_SCORE),
+              (lambda o: lots_of.get(o.participant, ()), 0.85))
+    for candidates_of, threshold in passes:
+        for o in offers:
+            if o.lot is not None:
+                continue
+            name = _title_key(o.get("item_name") or o.get("lot_name"))
+            if len(name) < 4:
+                continue
+            best, best_rank = None, 0.0
+            for lot in sorted(candidates_of(o)):
+                score = _name_score(name, keys.get(lot, ""), lot in truncated)
+                rank = score - (0.01 if (o.participant, lot) in taken else 0.0)
+                if score >= threshold and rank > best_rank:
+                    best, best_rank = lot, rank
+            if best is not None:
+                o.lot = best
+                taken.add((o.participant, best))
