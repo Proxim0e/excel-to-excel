@@ -108,6 +108,22 @@ class CheckOfferTest(unittest.TestCase):
         [r] = check_offer(offer(), {"DM000654009": None}, set())
         self.assertIn("перепроверить", r.reasons[0])
 
+    def test_device_dm_for_spare_part_needs_iso(self):
+        # 21643233, лот 509: комплект обслуживания SV650, а DM - самого вентилятора SV650
+        device = RegistryRecord(dm="DM000153158", name="Ventilator pulmonar", model="SV650",
+                                producer="SHENZHEN MINDRAY BIO-MEDICAL ELECTRONICS CO., LTD.")
+        part = offer(producer="Mindray", model="115-110150-00", dm_numbers=["DM000153158"], order=None,
+                     order_date=None, quality_docs=["ISO 13485"],
+                     lot_title="Lot nr. 509 Kit de mentenanță pentru 1 an compatibil cu ventilatorul pulmonar SV650")
+        [r] = check_offer(part, {"DM000153158": device}, {"DM000153158"})
+        self.assertEqual(r.status, CHECK)
+        self.assertIn("DM аппарата «SV650»", r.reasons[0])
+        self.assertIn("нужен ISO", r.reasons[0])
+        self.assertIn("ISO 13485", r.reasons[0])
+        # аппарат в названии лота не назван - обычное «модель не найдена» с подсказкой про ISO
+        [r] = check_offer(offer(model="X-1", lot_title="Lot nr. 1 Cateter"), {"DM000654009": RECORD}, set())
+        self.assertIn("не найдены в записи реестра", r.reasons[0])
+
     def test_mismatch_is_yellow(self):
         [r] = check_offer(offer(producer="Fiab"), {"DM000654009": RECORD}, set())
         self.assertEqual(r.status, CHECK)

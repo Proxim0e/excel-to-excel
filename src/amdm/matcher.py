@@ -133,6 +133,17 @@ def _numbers(text: Optional[str]) -> List[str]:
     return sorted(n.replace(",", ".").lstrip("0") or "0" for n in re.findall(r"\d+(?:[.,]\d+)?", text or ""))
 
 
+def device_in_lot(record: RegistryRecord, lot_title: str) -> Optional[str]:
+    """Модель из записи реестра названа в названии лота («Kit mentenanta 3 ani SV650» и DM аппарата SV650):
+    участник указал регистрацию аппарата, к которому запчасть. Возвращает эту модель или None."""
+    title = compact(lot_title or "")
+    for value in (record.model, record.trade_name):
+        c = compact(value or "")
+        if len(c) >= 4 and re.search(r"\d", c) and c in title:
+            return value
+    return None
+
+
 def check_offer(offer: OfferRegistration, records: dict, site_checked: set) -> List[CheckResult]:
     """
     records: dm -> RegistryRecord | None (None = искали и не нашли).
@@ -170,9 +181,17 @@ def check_offer(offer: OfferRegistration, records: dict, site_checked: set) -> L
             reasons.append(f"Производитель не совпал: в оферте «{offer.producer}», в реестре «{record.producer}»")
 
         m_ok, m_what = model_matches(offer.model, record)
-        if m_ok is False:
+        device = device_in_lot(record, offer.lot_title) if m_ok is False else None
+        if device:
+            # Решение Ivan 02.11.2026: регистрация аппарата не покрывает его запчасть / аксессуар / комплект -
+            # на само изделие нужен ISO (или его собственный DM)
+            iso = f" В оферте указано: {', '.join(offer.quality_docs)} — проверить его." if offer.quality_docs else ""
+            reasons.append(f"DM аппарата «{device}» ({record.name or '—'}), а лот — запчасть/аксессуар к нему: "
+                           f"регистрация аппарата не подходит, нужен ISO на изделие ({m_what}).{iso}")
+        elif m_ok is False:
             reasons.append(f"Модель/каталожный номер ({m_what}) не найдены в записи реестра "
-                           f"(модель: «{record.model or '—'}», каталог: «{record.catalog or '—'}»)")
+                           f"(модель: «{record.model or '—'}», каталог: «{record.catalog or '—'}»); "
+                           f"если это DM аппарата, а предлагается его запчасть — нужен ISO")
         elif m_ok is None and offer.model:
             reasons.append("Модель не с чем сравнить — проверить вручную")
 

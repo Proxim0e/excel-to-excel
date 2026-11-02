@@ -46,6 +46,7 @@ class OfferRegistration:
     raw_row3: str = ""
     raw_row4: str = ""
     note: Optional[str] = None           # "pentru DM", "piese" и т.п. — пояснение участника
+    lot_title: str = ""                  # B1 листа лота: «Kit mentenanta 3 ani SV650,Mindray»
 
 
 # Статусы проверки (цвета соответствуют твоему кодбуку)

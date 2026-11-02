@@ -61,6 +61,7 @@ def read_offers(wb) -> List[OfferRegistration]:
                 dm_numbers=p4["dm_numbers"], order=p4["order"], order_date=p4["order_date"],
                 quality_docs=p4["quality_docs"], note=p4["note"],
                 raw_row3=str(row3 or ""), raw_row4=str(row4 or ""),
+                lot_title=str(ws.cell(row=1, column=2).value or ""),
             ))
     return offers
 
