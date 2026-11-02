@@ -29,6 +29,7 @@ from typing import List, Optional, Tuple
 
 from src.manifest import MANIFEST_NAME, migrate
 
+
 logger = logging.getLogger(__name__)
 
 TITLE_CHARS = 600   # «шапка» первой страницы
@@ -285,7 +286,8 @@ def classify_tender(tender_dir: Path, force: bool = False) -> dict:
     db = Path(tender_dir) / MANIFEST_NAME
     conn = sqlite3.connect(db)
     migrate(conn)
-    where = "" if force else "WHERE d.doc_type IS NULL"
+    # pages = 0: PDF не прочитался (файл недокачан/занят) - тип угадан по имени, текста страниц нет, повторяем
+    where = "" if force else "WHERE d.doc_type IS NULL OR d.pages = 0"
     rows = conn.execute(
         "SELECT d.sha256, MIN(r.path), MIN(r.original_name) FROM documents d "
         f"JOIN document_refs r USING (sha256) {where} GROUP BY d.sha256").fetchall()
@@ -298,6 +300,8 @@ def classify_tender(tender_dir: Path, force: bool = False) -> dict:
             continue
         try:
             pages = extract_pages(Path(path))
+        except ImportError:
+            raise  # нет PyMuPDF - не помечаем все документы «прочитанными» по имени файла
         except Exception as e:
             logger.warning(f"[CLASSIFY] Не удалось прочитать {path}: {type(e).__name__} - {e}")
             pages = []
