@@ -59,10 +59,11 @@ def producer_matches(offered: Optional[str], registered: Optional[str]) -> Tuple
     acronym = re.sub(r"[^a-z]", "", a)
     if 3 <= len(acronym) <= 6 and _initials(registered).startswith(acronym):
         return True, 0.85
-    # опечатка или транслитерация в начале названия: «Aqumedical» - «AQUA MEDIKAL TIBBI ...»
+    # опечатка или транслитерация в начале названия: «Aqumedical» - «AQUA MEDIKAL TIBBI ...»,
+    # «SUN O SUB» - «SAN-O-SUB MBB»: начало реестрового названия той же длины или чуть длиннее
     reg = re.sub(r"[^a-z]", "", fold(registered or ""))
     if len(short) >= 6:
-        head = difflib.SequenceMatcher(None, short, reg[:len(short) + 2]).ratio()
+        head = max(difflib.SequenceMatcher(None, short, reg[:len(short) + extra]).ratio() for extra in (0, 1, 2))
         if head >= 0.8:
             return True, head
     ratio = difflib.SequenceMatcher(None, a, b).ratio()

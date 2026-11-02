@@ -12,13 +12,15 @@ class ProducerTests(unittest.TestCase):
                                     ("ICMN", "INTERNATIONAL COMPANY FOR MEDICAL NECESSITIES"),
                                     ("Aqumedical", "AQUA MEDIKAL TIBBI ARAC VE GERECLERI"),
                                     ("Fiab", "FIAB SPA"),
-                                    ("R-VENT MEDIKAL", "R-VENT MEDIKAL URETRIM A.S.")):
+                                    ("R-VENT MEDIKAL", "R-VENT MEDIKAL URETRIM A.S."),
+                                    ("SUN O SUB", "SAN-O-SUB MBB S.R.L.")):  # 21643233, лот 451
             self.assertTrue(producer_matches(offered, registered)[0], offered)
 
     def test_mismatches(self):
         for offered, registered in (("Lumed S.R.L.", "MEDICAL INTERNATIONAL RESEARCH"),
                                     ("Agfa NV", "BERNHARD FORSTER GMBH FORESTADENT"),
-                                    ("Fiab", "BIONEN S.A.S.")):
+                                    ("Fiab", "BIONEN S.A.S."),
+                                    ("Shenzhen UpnMed Equipment Co., Ltd", "CHIRANA T. INJECTA, S.R.O.")):
             self.assertFalse(producer_matches(offered, registered)[0], offered)
 
 
