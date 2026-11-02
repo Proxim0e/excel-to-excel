@@ -121,6 +121,32 @@ class ReviewCycleTests(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_unreadable_pdf_is_retried_next_run(self):
+        # Первый запуск: PDF не прочитался (файл недокачан/занят) - тип угадан по имени, страниц 0
+        with mock.patch.object(cl, "extract_pages", side_effect=OSError("locked")):
+            cl.classify_tender(self.root)
+        conn = sqlite3.connect(self.root / "manifest.sqlite")
+        try:
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM document_pages").fetchone()[0], 0)
+        finally:
+            conn.close()
+        # Второй запуск: файлы читаются - документы классифицируются заново по тексту
+        self.assertEqual(sum(cl.classify_tender(self.root).values()), 2)
+        conn = sqlite3.connect(self.root / "manifest.sqlite")
+        try:
+            pages = conn.execute("SELECT page_type FROM document_pages WHERE page_type = 'anexa22'").fetchall()
+        finally:
+            conn.close()
+        self.assertEqual(len(pages), 1)
+        self.assertEqual(cl.classify_tender(self.root), {})  # прочитанные повторно не трогаются
+
+    def test_missing_pymupdf_is_not_hidden(self):
+        with mock.patch.object(cl, "extract_pages", side_effect=ImportError("No module named 'fitz'")):
+            with self.assertRaises(ImportError):
+                cl.classify_tender(self.root)
+        # Ничего не помечено классифицированным: после установки библиотеки всё разберётся
+        self.assertEqual(sum(cl.classify_tender(self.root).values()), 2)
+
     def test_human_fix_survives_reclassification(self):
         self.assertEqual(sum(cl.classify_tender(self.root).values()), 2)
         self.assertEqual(cl.classify_tender(self.root), {})  # уже классифицированы

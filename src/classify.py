@@ -292,30 +292,32 @@ def classify_tender(tender_dir: Path, force: bool = False) -> dict:
         "SELECT d.sha256, MIN(r.path), MIN(r.original_name) FROM documents d "
         f"JOIN document_refs r USING (sha256) {where} GROUP BY d.sha256").fetchall()
 
-    counts = {}
-    now = datetime.now().isoformat(timespec="seconds")
-    for sha, path, original_name in rows:
-        # Решение человека правилами не перезаписываем
-        if conn.execute("SELECT type_source FROM documents WHERE sha256 = ?", (sha,)).fetchone()[0] == "human":
-            continue
-        try:
-            pages = extract_pages(Path(path))
-        except ImportError:
-            raise  # нет PyMuPDF - не помечаем все документы «прочитанными» по имени файла
-        except Exception as e:
-            logger.warning(f"[CLASSIFY] Не удалось прочитать {path}: {type(e).__name__} - {e}")
-            pages = []
-        c = classify(pages, original_name or Path(path).name)
-        conn.execute("DELETE FROM document_pages WHERE sha256 = ?", (sha,))
-        conn.executemany("INSERT INTO document_pages (sha256, page_no, text, page_type) VALUES (?, ?, ?, ?)",
-                         [(sha, i + 1, t, pt) for i, (t, pt) in enumerate(zip(pages, c.page_types))])
-        conn.execute(
-            "UPDATE documents SET doc_type = ?, type_confidence = ?, type_source = 'rule', type_rule = ?, "
-            "pages = ?, has_text = ?, contains = ?, classified_at = ? WHERE sha256 = ?",
-            (c.doc_type, c.confidence, c.rule, len(pages), int(c.has_text), ",".join(c.contains), now, sha))
-        counts[c.doc_type] = counts.get(c.doc_type, 0) + 1
-    conn.commit()
-    conn.close()
+    try:
+        counts = {}
+        now = datetime.now().isoformat(timespec="seconds")
+        for sha, path, original_name in rows:
+            # Решение человека правилами не перезаписываем
+            if conn.execute("SELECT type_source FROM documents WHERE sha256 = ?", (sha,)).fetchone()[0] == "human":
+                continue
+            try:
+                pages = extract_pages(Path(path))
+            except ImportError:
+                raise  # нет PyMuPDF - не помечаем все документы «прочитанными» по имени файла
+            except Exception as e:
+                logger.warning(f"[CLASSIFY] Не удалось прочитать {path}: {type(e).__name__} - {e}")
+                pages = []
+            c = classify(pages, original_name or Path(path).name)
+            conn.execute("DELETE FROM document_pages WHERE sha256 = ?", (sha,))
+            conn.executemany("INSERT INTO document_pages (sha256, page_no, text, page_type) VALUES (?, ?, ?, ?)",
+                             [(sha, i + 1, t, pt) for i, (t, pt) in enumerate(zip(pages, c.page_types))])
+            conn.execute(
+                "UPDATE documents SET doc_type = ?, type_confidence = ?, type_source = 'rule', type_rule = ?, "
+                "pages = ?, has_text = ?, contains = ?, classified_at = ? WHERE sha256 = ?",
+                (c.doc_type, c.confidence, c.rule, len(pages), int(c.has_text), ",".join(c.contains), now, sha))
+            counts[c.doc_type] = counts.get(c.doc_type, 0) + 1
+        conn.commit()
+    finally:
+        conn.close()  # и при ImportError: иначе на Windows манифест остаётся заблокированным
     return counts
 
 

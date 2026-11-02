@@ -1,4 +1,7 @@
+import sqlite3
+import tempfile
 import unittest
+from pathlib import Path
 
 from src.anexa22 import parse as p
 from src.anexa22.evaluate import participant_key, same_text, spec_recall
@@ -107,6 +110,79 @@ class LotTests(unittest.TestCase):
         self.assertEqual(p.split_country_producer("Italia Fiab"), ("Italia", "Fiab"))
         self.assertEqual(p.split_country_producer("CARESTREAM HEALTH SUA"), ("SUA", "CARESTREAM HEALTH"))
         self.assertEqual(p.split_country_producer("Fiab"), ("", "Fiab"))
+
+
+class ResolveLotsTests(unittest.TestCase):
+    """Лот для строк Anexa 22 без номера лота и CPV (тендер 21643233: MED-M, Triumf-Motiv, Romedcom)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.conn = sqlite3.connect(":memory:")
+        self.conn.execute("CREATE TABLE document_refs (lot_no INTEGER, lot_title TEXT, participant TEXT)")
+        self.conn.executemany("INSERT INTO document_refs VALUES (?, ?, ?)", [
+            (390, "Lot nr. 390 Electrod pasiv", "MED-M"),
+            (391, "Lot nr. 391 Electrod pasiv din silicon reutilizabil, adult ARC 400 Bowa", "Electeh"),
+            (342, "Lot nr. 342 Centre disc Dialog+ (V5), B.Braun", "ACME"),
+            (343, "Lot nr. 343 Centre disc Dialog+ (V5), B.Braun", "ACME"),
+            (398, "Lot nr. 398 Element filtrare IMT-POC 8600", "Romedcom"),
+        ])
+        # Папка лота участника пустая (документы загружены в другой лот), название обрезано
+        (self.root / "Lot nr. 523 Lama pentru dermatom sterile..tor)" / "MED-M").mkdir(parents=True)
+
+    def tearDown(self):
+        self.conn.close()
+        self.tmp.cleanup()
+
+    def offer(self, participant, name, lot=None):
+        return p.Offer(participant, "sha", 1, lot, {"item_name": name, "model": "X"})
+
+    def resolve(self, *offers):
+        p.resolve_lots(list(offers), self.conn, self.root)
+        return [o.lot for o in offers]
+
+    def test_tender_lot_wins_over_participant_numbering(self):
+        o = self.offer("Romedcom", "Lotul nr. 130 - Lot nr. 398 Element filtrare IMT-POC 8600", lot=130)
+        self.assertEqual(self.resolve(o), [398])
+
+    def test_exact_name_in_tender_beats_prefix_in_participant_lots(self):
+        # у MED-M в манифесте только лот 390, но название точно совпадает с лотом 391
+        o = self.offer("MED-M", "Electrod pasiv din silicon reutilizabil, adult ARC 400 Bowa")
+        plain = self.offer("MED-M", "Electrod pasiv")
+        self.assertEqual(self.resolve(o, plain), [391, 390])
+
+    def test_same_titles_are_taken_in_order(self):
+        a = self.offer("ACME", "Centre disc Dialog+ (V5), B.Braun")
+        b = self.offer("ACME", "Centre disc Dialog+ (V5), B.Braun")
+        self.assertEqual(self.resolve(a, b), [342, 343])
+
+    def test_truncated_folder_title(self):
+        o = self.offer("MED-M", "Lama pentru dermatom sterile ( Watson- autor)")
+        self.assertEqual(self.resolve(o), [523])
+
+    def test_unknown_name_stays_without_lot(self):
+        self.assertEqual(self.resolve(self.offer("MED-M", "Hartie termica 57 mm")), [None])
+
+    def test_junk_rows(self):
+        junk = ["Bunuri/servicii", "TOTAL", "Lotul 269", "Total lot 269", "Total lot 392 Lotul 394"]
+        for name in junk:
+            self.assertTrue(p._is_junk(p.Offer("L", "sha", 1, None, {"item_name": name})), name)
+        # хвост производителя предыдущей строки в итоге - всё равно мусор
+        self.assertTrue(p._is_junk(p.Offer("L", "sha", 1, None, {"item_name": "Total lot 353", "producer": "Ltd"})))
+        # оферта, чьё название похоже на заголовок, но есть модель - не мусор
+        self.assertFalse(p._is_junk(p.Offer("L", "sha", 1, None, {"item_name": "Lot 5", "model": "F4141"})))
+
+    def test_name_only_row_on_next_page_is_continuation(self):
+        columns = p.build_columns([[cell(0, 200, "Denumirea bunurilor"), cell(200, 300, "Modelul"),
+                                    cell(300, 400, "Producătorul")]], 0, 1)
+        first = p._to_offers(p.parse_rows([[cell(0, 200, "Element filtrare IMT-POC 8600 med"),
+                                            cell(200, 300, "IPE160SMA"), cell(300, 400, "INMATEC")]],
+                                          columns, 400), [], "Romedcom", "sha", 1, {})
+        tail = p._to_offers(p.parse_rows([[cell(0, 200, "INMATEC GaseTechnologie GmbH")]], columns, 400),
+                            first, "Romedcom", "sha", 2, {})
+        self.assertEqual(tail, [])
+        self.assertTrue(first[0].get("item_name").endswith("INMATEC GaseTechnologie GmbH"))
+        self.assertEqual(first[0].pages, {1, 2})
 
 
 class EvaluateTests(unittest.TestCase):
