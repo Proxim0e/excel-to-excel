@@ -136,6 +136,7 @@ class App:
         buttons.grid(row=0, column=3, rowspan=3, padx=10)
         ttk.Button(buttons, text="Оценка", command=self.run_evaluation).pack(fill="x")
         ttk.Button(buttons, text="Уточнения", command=self.run_clarifications).pack(fill="x")
+        ttk.Button(buttons, text="В Excel", command=self.write_excel).pack(fill="x")
         ttk.Button(buttons, text="Стоп", command=self.stop).pack(fill="x")
         top.columnconfigure(1, weight=1)
 
@@ -236,11 +237,32 @@ class App:
                         raise KeyboardInterrupt("остановлено")
                     self.root.after(0, lambda n=done["n"]: self._progress(n))
 
-                self.total_lots = None
                 evaluate_tender(result, tender, kb, offline=True, on_lot=on_lot)
+                self._write_excel(result, tender, kb)
             finally:
                 kb.close()
         self._start("Оценка", task)
+
+    @staticmethod
+    def _write_excel(result: Path, tender: Path, kb):
+        from src.excel.verdicts import write_verdicts
+        stats = write_verdicts(result, tender, kb)
+        logger.info(f"[VERDICTS] Цвета решений записаны: {stats.pop('file')} - {stats}")
+
+    def write_excel(self):
+        """Решения (с ответами человека) - в копию result-файла."""
+        paths = self._paths()
+        if not paths:
+            return
+        result, tender = paths
+
+        def task():
+            kb = connect(self.db)
+            try:
+                self._write_excel(result, tender, kb)
+            finally:
+                kb.close()
+        self._start("Запись в Excel", task)
 
     def run_clarifications(self):
         paths = self._paths()
