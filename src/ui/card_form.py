@@ -174,7 +174,7 @@ class CardForm:
                 r["period"] if r["period"] == "этот тендер" or r["period"].isdigit() else r["period"],
                 where, r.get("lot_title") or "", r["participant"], cd.fmt_price(r.get("unit_price")),
                 cd.fmt_price(r.get("base_price")),
-                cd.fmt_price(r.get("quantity")), f"{r['ratio'] * 100:.0f}%" if r.get("ratio") else "",
+                cd.fmt_price(r.get("quantity")), cd.fmt_ratio(r.get("ratio")),
                 cd.DECISION_LABELS.get(r["decision"], r["decision"] or "")), tags=(tag,))
         if not self.prices:
             tree.insert("", "end", values=("", "", "в истории нет оферт этой модели", "", "", "", "", "", ""))

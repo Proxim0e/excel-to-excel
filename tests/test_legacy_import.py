@@ -85,6 +85,10 @@ class LegacyImportTests(unittest.TestCase):
         self.assertTrue(rows[1]["won"])
         self.assertIn("победитель 120", price_summary(rows)[0])
         self.assertEqual(fmt_price(1234.5), "1 234.50")
+        from src.ui.card_data import fmt_ratio
+        self.assertEqual(fmt_ratio(117855 / (22.4 * 4050)), "129.91%")   # 21641880 лот 59: ниже порога 130%
+        self.assertEqual(fmt_ratio(1.29999), "129.99%")
+        self.assertEqual(fmt_ratio(1.3), "130.00%")
 
     def test_year_parsing(self):
         html = "<span>Perioada de actualizare de la 04.08.2025 16:05 până la 08.09.2025</span>"

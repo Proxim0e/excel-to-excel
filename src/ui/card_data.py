@@ -274,6 +274,14 @@ def price_summary(rows: List[Dict]) -> List[str]:
     return out
 
 
+def fmt_ratio(ratio: Optional[float]) -> str:
+    """Доля базы в процентах с двумя знаками: 1.2991071 -> «129.91%». Округление до целого показало бы «130%»
+    у оферты ниже порога 130% (отказ по цене - только при ≥ 130%, без округления)."""
+    if ratio is None:
+        return ""
+    return f"{int(ratio * 10000 + 1e-6) / 100:.2f}%"     # отбросить, а не округлить: 129.999 -> 129.99, не 130.00
+
+
 def fmt_price(v: Optional[float]) -> str:
     if v is None:
         return ""
