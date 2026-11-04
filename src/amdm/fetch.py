@@ -222,6 +222,60 @@ class PlaywrightFetcher:
     def lookup_many(self, numbers: Iterable[str]) -> Dict[str, Optional[RegistryRecord]]:
         return {dm: self.lookup(dm) for dm in numbers}
 
+    # --- поиск по колонке (оферта без номера DM) ---------------------------------
+    PAGER_SELECTORS = [GRID + " .dxp-summary", GRID + " [class*='dxp-summary']"]
+    SEARCH_FIELDS = ("dm", "catalog", "model", "producer", "name", "trade_name")
+
+    def _signature(self) -> tuple:
+        """Состояние таблицы: счётчик страниц, первая строка, «нет данных» - по смене видно, что фильтр сработал."""
+        # all_inner_texts не ждёт элемент: во время перерисовки счётчик и строки на миг исчезают,
+        # а inner_text() ждал бы их 30 с
+        try:
+            pager = next((t for sel in self.PAGER_SELECTORS for t in self._page.locator(sel).all_inner_texts()), "")
+            first = self._page.locator(self.DATA_ROW_SELECTORS[0] + " > td").all_inner_texts()[:1]
+            return (pager, first[0] if first else "", self._empty_shown())
+        except Exception:
+            return ("", "", None)   # таблица перерисовывается
+
+    def _set_filter(self, field: str, text: str) -> None:
+        """Одна колонка фильтра; ждём перерисовки таблицы (или FILTER_WAIT, если результат совпал с прежним)."""
+        cells = self._first(self.FILTER_INPUT_SELECTORS)
+        if cells is None:
+            raise RuntimeError("Не нашёл строку фильтров таблицы. Запусти `python -m src.amdm probe`.")
+        box = cells.nth(self._columns.index(field)).locator("input").first
+        if (box.input_value() or "") == text:
+            return
+        before = self._signature()
+        box.click()
+        box.press("Control+A")
+        box.press("Backspace")
+        if text:
+            box.press_sequentially(text, delay=40)
+        box.press("Enter")
+        deadline = time.time() + self.FILTER_WAIT
+        while time.time() < deadline:
+            time.sleep(0.5)
+            if self._signature() != before:
+                time.sleep(0.5)   # строки дорисовываются после счётчика
+                return
+
+    def search(self, field: str, text: str) -> List[RegistryRecord]:
+        """Записи первой страницы реестра (до 10) по вхождению text в колонку field («catalog»: «F4141»).
+        Остальные фильтры сбрасываются: в таблице всегда один фильтр."""
+        time.sleep(self.delay + random.uniform(0, 0.6))
+        for other in self.SEARCH_FIELDS:
+            if other != field and other in self._columns:
+                self._set_filter(other, "")
+        self._set_filter(field, text)
+        if self._empty_shown():
+            return []
+        return [r for r in (record_from_row(v) for v in self._rows()) if r]
+
+    def reload(self) -> None:
+        """Страница реестра заново (после нескольких сбоев подряд), фильтры пустые."""
+        self._page.goto(REGISTRY_URL, wait_until="networkidle", timeout=60000)
+        self._columns = self._read_headers()
+
 
 def probe(out_dir: Path, headless: bool = True) -> Path:
     """Сохраняет HTML и скриншот страницы реестра, чтобы поправить селекторы."""

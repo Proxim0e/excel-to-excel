@@ -32,6 +32,15 @@ CREATE TABLE IF NOT EXISTS amdm_not_found (
     checked_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS amdm_record_order_date ON amdm_record(order_date);
+-- Поиск по колонке реестра (каталожный номер / модель), когда в оферте нет номера DM:
+-- запрос -> номера DM первой страницы результата (пусто - не найдено)
+CREATE TABLE IF NOT EXISTS amdm_search (
+    field TEXT NOT NULL,
+    query TEXT NOT NULL,
+    dms TEXT NOT NULL,
+    checked_at TEXT NOT NULL,
+    PRIMARY KEY (field, query)
+);
 """
 
 
@@ -88,3 +97,20 @@ class RegistryCache:
             return False
         checked = datetime.fromisoformat(row[0])
         return (now or datetime.now()) - checked < timedelta(days=NOT_FOUND_TTL_DAYS)
+
+    # --- поиск по названию / коду ---------------------------------------------
+    def get_search(self, field: str, query: str, now: Optional[datetime] = None) -> Optional[list]:
+        """Записи, найденные этим запросом недавно (None - запроса не было или он устарел)."""
+        row = self.db.execute("SELECT dms, checked_at FROM amdm_search WHERE field = ? AND query = ?",
+                              (field, query)).fetchone()
+        if not row or (now or datetime.now()) - datetime.fromisoformat(row[1]) >= timedelta(days=NOT_FOUND_TTL_DAYS):
+            return None
+        return [r for r in (self.get(dm) for dm in row[0].split(",") if dm) if r]
+
+    def put_search(self, field: str, query: str, records: Iterable[RegistryRecord]) -> None:
+        records = list(records)
+        for r in records:
+            self.put(r, source="site-search")
+        self.db.execute("INSERT OR REPLACE INTO amdm_search (field, query, dms, checked_at) VALUES (?, ?, ?, ?)",
+                        (field, query, ",".join(r.dm for r in records), datetime.now().isoformat(timespec="seconds")))
+        self.db.commit()

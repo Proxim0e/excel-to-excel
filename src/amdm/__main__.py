@@ -27,7 +27,7 @@ from pathlib import Path
 from src.config import RESOURCE_DIR
 from src.amdm.cache import RegistryCache
 from src.amdm.mark import mark_workbook
-from src.amdm.matcher import check_offer
+from src.amdm.matcher import check_offer, search_codes
 from src.amdm.report import write_report
 from src.amdm.workbook import load_workbook_tolerant, read_offers
 
@@ -73,6 +73,55 @@ def collect_records(cache: RegistryCache, numbers, offline: bool, headless: bool
     return records, site_checked
 
 
+def collect_by_name(cache: RegistryCache, codes, offline: bool, headless: bool) -> dict:
+    """Оферты без номера DM: код модели -> записи реестра, где он есть в «Nr. catalog» (или в «Model»).
+    Так ищет человек, когда участник указал только CE/ISO. Запрос хранится в копии реестра неделю;
+    offline - только сохранённые запросы."""
+    found, to_search = {}, []
+    for code in sorted(set(codes)):
+        cached = cache.get_search("catalog", code)
+        if cached is not None:
+            found[code] = cached or (cache.get_search("model", code) or [])
+        else:
+            to_search.append(code)
+    logger.info(f"[AMDM] Оферт без номера DM - поиск по коду модели: кодов {len(found) + len(to_search)}; "
+                f"уже искали: {len(found)}; искать на сайте: {0 if offline else len(to_search)}")
+    if to_search and not offline:
+        from src.amdm.fetch import PlaywrightFetcher
+        try:
+            with PlaywrightFetcher(headless=headless) as fetcher:
+                failures = 0
+                for i, code in enumerate(to_search, start=1):
+                    try:
+                        recs = fetcher.search("catalog", code)
+                        cache.put_search("catalog", code, recs)
+                        where = "Nr. catalog"
+                        if not recs:
+                            recs = fetcher.search("model", code)
+                            cache.put_search("model", code, recs)
+                            where = "Model"
+                        failures = 0
+                    except Exception as e:  # сбой на одном коде не обрывает поиск остальных
+                        failures += 1
+                        logger.warning(f"[AMDM] поиск: {i}/{len(to_search)} ({100 * i / len(to_search):.0f}%) "
+                                       f"код «{code}» - ошибка: {str(e).splitlines()[0][:120]}; пропускаю")
+                        if failures >= 3:
+                            logger.info("[AMDM] Несколько сбоев подряд - перезагружаю страницу реестра")
+                            fetcher.reload()
+                            failures = 0
+                        continue
+                    found[code] = recs
+                    what = ("; ".join(f"{r.dm} {r.producer or '—'} {r.catalog or r.model or ''}".strip()
+                                      for r in recs[:3]) if recs else "ничего")
+                    logger.info(f"[AMDM] поиск: {i}/{len(to_search)} ({100 * i / len(to_search):.0f}%) "
+                                f"код «{code}» в {where} → {what}")
+        except ImportError:
+            logger.error("Не установлен playwright: поиск по коду модели пропущен.")
+        except Exception as e:
+            logger.error(f"Поиск по коду модели прерван: {e}. Найденное сохранено.")
+    return found
+
+
 def cmd_check(args) -> int:
     src = Path(args.workbook)
     wb = load_workbook_tolerant(src)
@@ -81,10 +130,12 @@ def cmd_check(args) -> int:
     cache = RegistryCache(Path(args.db))
     try:
         records, site_checked = collect_records(cache, numbers, args.offline, not args.show_browser)
+        codes = [c for o in offers if not o.dm_numbers for c in search_codes(o)]
+        by_name = collect_by_name(cache, codes, args.offline, not args.show_browser)
     finally:
         cache.close()
 
-    results = [r for o in offers for r in check_offer(o, records, site_checked)]
+    results = [r for o in offers for r in check_offer(o, records, site_checked, by_name)]
     for r in results:
         why = f" — {'; '.join(r.reasons)[:160]}" if r.status != "verde" and r.reasons else ""
         logger.info(f"[AMDM] {r.offer.sheet}, {r.offer.supplier}: {r.dm or 'без DM'} {r.status}{why}")

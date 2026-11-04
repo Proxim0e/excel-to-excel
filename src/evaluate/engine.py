@@ -116,7 +116,7 @@ def offer_model_key(offer: Optional[dict]) -> Optional[str]:
 
 
 def evaluate_participant(lot: Lot, p: Participant, manifest: sqlite3.Connection, kb: sqlite3.Connection,
-                         amdm_records: dict, site_checked: set) -> Evaluation:
+                         amdm_records: dict, site_checked: set, by_name: Optional[dict] = None) -> Evaluation:
     key = offer_model_key(p.offer)
 
     def result(status, source, conf, reasons, code=None, findings=None, ask_card=False):
@@ -140,9 +140,9 @@ def evaluate_participant(lot: Lot, p: Participant, manifest: sqlite3.Connection,
         reasons = [f"≠ cerință: {c}" for c in check.conflicts] + [f"lipsește în A22: {m}" for m in check.missing_in_offer]
         return result(cf.ALTERNATIVA, cf.AUTO, 0.9, reasons, "technical", findings)
 
-    amdm_status, amdm_reasons = None, []
+    amdm_status, amdm_reasons, checks = None, [], []
     if p.registration:
-        checks = amdm_check(p.registration, amdm_records, site_checked)
+        checks = amdm_check(p.registration, amdm_records, site_checked, by_name)
         if checks:
             amdm_status = overall_status(checks)
             amdm_reasons = [r for c in checks for r in c.reasons]
@@ -154,25 +154,32 @@ def evaluate_participant(lot: Lot, p: Participant, manifest: sqlite3.Connection,
     if not history.card and key:
         dms = p.registration.dm_numbers if p.registration else []
         record = next((amdm_records.get(dm) for dm in dms if amdm_records.get(dm)), None)
+        if record is None and amdm_status == "verde" and checks and checks[0].record:
+            record = checks[0].record   # найден в реестре по коду модели (DM в оферте не указан)
         findings["card_prefill"] = prefill(key, p.offer, p.registration, record, lot.title)
     d = cf.decide(check, amdm_status, amdm_reasons, history)
     return result(d.status, d.source, d.confidence, d.reasons, d.reason_code, findings, d.ask_card)
 
 
-def evaluate_lot(lot: Lot, manifest, kb, amdm_records, site_checked) -> List[Evaluation]:
+def evaluate_lot(lot: Lot, manifest, kb, amdm_records, site_checked, by_name: Optional[dict] = None) -> List[Evaluation]:
     """Все участники лота, по цене (без цены - в конце)."""
     order = sorted(lot.participants, key=lambda p: (p.ratio is None, p.ratio or 0))
-    return [evaluate_participant(lot, p, manifest, kb, amdm_records, site_checked) for p in order]
+    return [evaluate_participant(lot, p, manifest, kb, amdm_records, site_checked, by_name) for p in order]
 
 
 def amdm_lookup(lots: List[Lot], offline: bool = True):
-    """Записи реестра AMDM по всем номерам DM тендера (локальная копия; offline=False - и сайт)."""
-    from src.amdm.__main__ import DEFAULT_DB, collect_records
+    """Записи реестра AMDM по всем номерам DM тендера (локальная копия; offline=False - и сайт) и, для оферт
+    без номера DM, записи, найденные по коду модели. Возвращает (records, site_checked, by_name)."""
+    from src.amdm.__main__ import DEFAULT_DB, collect_by_name, collect_records
     from src.amdm.cache import RegistryCache
-    numbers = {dm for lot in lots for p in lot.participants if p.registration for dm in p.registration.dm_numbers}
+    from src.amdm.matcher import search_codes
+    regs = [p.registration for lot in lots for p in lot.participants if p.registration]
+    numbers = {dm for r in regs for dm in r.dm_numbers}
     cache = RegistryCache(Path(DEFAULT_DB))
     try:
-        return collect_records(cache, numbers, offline, True)
+        records, site_checked = collect_records(cache, numbers, offline, True)
+        by_name = collect_by_name(cache, [c for r in regs if not r.dm_numbers for c in search_codes(r)], offline, True)
+        return records, site_checked, by_name
     finally:
         cache.close()
 
@@ -237,12 +244,12 @@ def evaluate_tender(result_path: Path, tender_dir: Path, kb: sqlite3.Connection,
     """Оценка всего тендера; on_lot(lot, решения) - после каждого лота (окно приложения, прогресс)."""
     lots = read_lots(result_path, tender_dir)
     logger.info(f"[EVAL] Лотов: {len(lots)}, оферт: {sum(len(l.participants) for l in lots)}")
-    records, site_checked = amdm_lookup(lots, offline)
+    records, site_checked, by_name = amdm_lookup(lots, offline)
     manifest = sqlite3.connect(Path(tender_dir) / MANIFEST_NAME)
     evaluations = []
     try:
         for i, lot in enumerate(lots, start=1):
-            evs = evaluate_lot(lot, manifest, kb, records, site_checked)
+            evs = evaluate_lot(lot, manifest, kb, records, site_checked, by_name)
             for ev in evs:
                 asked = save(kb, ev, lot)
                 logger.info(f"[EVAL] лот {lot.lot_no} ({i}/{len(lots)}, {100 * i / len(lots):.0f}%), "

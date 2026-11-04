@@ -108,6 +108,52 @@ class CheckOfferTest(unittest.TestCase):
         [r] = check_offer(offer(), {"DM000654009": None}, set())
         self.assertIn("перепроверить", r.reasons[0])
 
+    def test_search_codes(self):
+        from src.amdm.matcher import search_codes
+        o = offer(model="Masca nebulizator adult (Codul produsului:T 20163) ISO 13485:2016", dm_numbers=[])
+        self.assertEqual(search_codes(o), ["20163"])
+        self.assertEqual(search_codes(offer(model="F4141; DM000466393", dm_numbers=[])), ["F4141"])
+        # объём и описание - не код (21641880, лоты 2 и 219)
+        self.assertEqual(search_codes(offer(model="Metpak 500ml (cod 5270)", dm_numbers=[])), ["5270"])
+        self.assertEqual(search_codes(offer(model="ECG 5-Lead", dm_numbers=[])), [])
+        # 121C - температура стерилизации, а не код (лот 187)
+        self.assertEqual(search_codes(offer(model="Indicator strip Steam 121C- 15 (104.220.0500)", dm_numbers=[])),
+                         ["104.220.0500"])
+
+    def test_no_dm_found_by_model_code(self):
+        # 21641880: участник указал только CE/ISO, человек нашёл регистрацию поиском по названию
+        pencil = RegistryRecord(dm="DM000466393", name="Electrod activ", producer="FIAB S.P.A.",
+                                model="REUSABLE PENCIL", catalog="F4141")
+        o = offer(producer="Fiab", model="F4141", dm_numbers=[], order=None, order_date=None, quality_docs=["CE"])
+        [r] = check_offer(o, {}, set(), {"F4141": [pencil]})
+        self.assertEqual((r.status, r.dm), (OK, "DM000466393"))
+        self.assertIn("найден в реестре по коду F4141", r.reasons[0])
+        # тот же код у другого производителя - проверить
+        [r] = check_offer(offer(producer="Bowa", model="F4141", dm_numbers=[], order=None, order_date=None),
+                          {}, set(), {"F4141": [pencil]})
+        self.assertEqual(r.status, CHECK)
+        self.assertIn("другого производителя", r.reasons[0])
+        # по коду ничего - возможно, nu este înregistrat
+        [r] = check_offer(o, {}, set(), {"F4141": []})
+        self.assertEqual(r.status, CHECK)
+        self.assertIn("nu este înregistrat", r.reasons[0])
+        # поиск не делали (offline, новый код) - прежняя пометка про ISO/CE
+        [r] = check_offer(o, {}, set(), {})
+        self.assertIn("Номера DM нет, указаны: CE", r.reasons[0])
+
+    def test_search_cache(self):
+        import tempfile
+        from pathlib import Path
+        from src.amdm.cache import RegistryCache
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = RegistryCache(Path(tmp) / "r.sqlite")
+            self.assertIsNone(cache.get_search("catalog", "F4141"))
+            cache.put_search("catalog", "F4141", [RegistryRecord(dm="DM000466393", producer="FIAB")])
+            cache.put_search("catalog", "X999", [])
+            self.assertEqual([r.dm for r in cache.get_search("catalog", "F4141")], ["DM000466393"])
+            self.assertEqual(cache.get_search("catalog", "X999"), [])
+            cache.close()
+
     def test_device_dm_for_spare_part_needs_iso(self):
         # 21643233, лот 509: комплект обслуживания SV650, а DM - самого вентилятора SV650
         device = RegistryRecord(dm="DM000153158", name="Ventilator pulmonar", model="SV650",

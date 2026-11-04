@@ -144,13 +144,68 @@ def device_in_lot(record: RegistryRecord, lot_title: str) -> Optional[str]:
     return None
 
 
-def check_offer(offer: OfferRegistration, records: dict, site_checked: set) -> List[CheckResult]:
+# Числа, которые не код изделия: стандарты и годы («ISO 13485:2016», «EN 1041»)
+NOT_CODES = re.compile(r"^(?:13485|9001|14001|45001|14971|11135|11137|11140|10993|60601|1041|15223|"
+                       r"(?:19|20)\d\d)$")
+
+
+UNIT_LIKE = re.compile(r"(?i)^\d+(?:[.,]\d+)?(?:x\d+(?:[.,]\d+)?)*(?:ml|mm|cm|m|l|g|kg|mg|inch|buc|pcs|fr|ch|"
+                       r"w|v|h|min|c|°c)$|^\d{1,2}[./]\d{1,2}[./]\d{2,4}$|^\d+(?:[.,]\d+)?(?:x\d+(?:[.,]\d+)?)+$|^\d+-(?:lead|fir|fire|canale|ch)$")
+
+
+def search_codes(offer: OfferRegistration, limit: int = 2) -> List[str]:
+    """Коды модели оферты для поиска в реестре по колонке «Nr. catalog» / «Model», когда номера DM нет:
+    с цифрами, от 4 знаков, не стандарт и не год, не номер DM."""
+    codes = []
+    for tok in model_tokens(offer.model):
+        c = re.sub(r"\s", "", tok)
+        # «500ml», «35x43cm», «5-Lead» - размер, объём, описание, а не код изделия
+        if UNIT_LIKE.match(c):
+            continue
+        if len(compact(c)) >= 4 and not NOT_CODES.match(c) and not re.match(r"(?i)^dm\d", c) and c not in codes:
+            codes.append(c)
+    return codes[:limit]
+
+
+def check_by_name(offer: OfferRegistration, found: List[RegistryRecord], searched: List[str]) -> Optional[CheckResult]:
+    """Оферта без номера DM: записи реестра, найденные по коду модели (как ищет человек - по названию).
+    Совпали производитель и модель - изделие зарегистрировано (номер DM в оферте не указан);
+    по кодам ничего - вероятно «nu este inregistrat» (или изделие не медицинское) - проверить."""
+    if not searched:
+        return None
+    hits = [r for r in found if model_matches(offer.model, r)[0] is True]
+    same = [r for r in hits if producer_matches(offer.producer, r.producer)[0]] if offer.producer else hits
+    iso = f" В оферте: {', '.join(offer.quality_docs)}." if offer.quality_docs else ""
+    if same:
+        r = same[0]
+        return CheckResult(offer, r.dm, OK, [
+            f"Номер DM в оферте не указан; найден в реестре по коду {', '.join(searched)}: {r.dm} — "
+            f"{r.producer}; {r.model or r.catalog or r.name}"], r)
+    if hits:
+        r = hits[0]
+        return CheckResult(offer, r.dm, CHECK, [
+            f"Номер DM в оферте не указан; по коду {', '.join(searched)} в реестре {r.dm} другого производителя: "
+            f"«{r.producer}» (в оферте «{offer.producer}»).{iso}"], r)
+    return CheckResult(offer, None, CHECK, [
+        f"Номер DM в оферте не указан, по коду модели ({', '.join(searched)}) в реестре не найдено — возможно, "
+        f"nu este înregistrat (или изделие не медицинское).{iso}"])
+
+
+def check_offer(offer: OfferRegistration, records: dict, site_checked: set,
+                by_name: Optional[dict] = None) -> List[CheckResult]:
     """
     records: dm -> RegistryRecord | None (None = искали и не нашли).
     site_checked: номера, по которым в этом запуске был ответ сайта или свежая отметка «не найден».
+    by_name: код модели -> записи реестра, найденные поиском по нему (для оферт без номера DM).
     Возвращает по одному результату на каждый номер DM (или один, если номеров нет).
     """
     if not offer.dm_numbers:
+        if by_name is not None:
+            codes = [c for c in search_codes(offer) if c in by_name]
+            found = [r for c in codes for r in by_name[c]]
+            result = check_by_name(offer, found, codes)
+            if result:
+                return [result]
         if offer.quality_docs:
             return [CheckResult(offer, None, CHECK, [
                 f"Номера DM нет, указаны: {', '.join(offer.quality_docs)} — проверить, что изделие "
