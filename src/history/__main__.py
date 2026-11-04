@@ -21,7 +21,7 @@ from src.history.importer import import_workbook
 def cmd_import(args) -> int:
     conn = connect(args.db)
     try:
-        r = import_workbook(conn, Path(args.workbook), args.tender, force=args.force)
+        r = import_workbook(conn, Path(args.workbook), args.tender, force=args.force, online=True)
         if r["skipped"]:
             print(f"Тендер {r['tender_id']}: файл не менялся с последнего импорта (снимок {r['snapshot_id']})")
             return 0
@@ -134,6 +134,21 @@ def cmd_sync(args) -> int:
     return 0
 
 
+def cmd_years(args) -> int:
+    from src.history.tender_year import known_years, tender_year
+    kb = connect(args.db)
+    try:
+        tids = {r[0]: (r[1], r[2]) for r in kb.execute("SELECT tender_id, source_file, file_mtime FROM snapshots")}
+        for (t,) in kb.execute("SELECT DISTINCT tender_id FROM evaluations"):
+            tids.setdefault(t, (None, None))
+        for t, (src, mtime) in sorted(tids.items()):
+            print(t, tender_year(kb, t, src, mtime))
+        print(f"Годов с сайта в базе: {len(known_years(kb))} из {len(tids)}")
+    finally:
+        kb.close()
+    return 0
+
+
 def main(argv=None) -> int:
     sys.stdout.reconfigure(encoding="utf-8")
     ap = argparse.ArgumentParser(prog="python -m src.history", description="База знаний: история тендеров")
@@ -160,6 +175,8 @@ def main(argv=None) -> int:
     k = sub.add_parser("catalog", help="все модели и оферты в Excel (data/catalog.xlsx)")
     k.add_argument("--out")
     k.set_defaults(func=cmd_catalog)
+    g = sub.add_parser("years", help="год каждого тендера базы с achizitii.md (дата публикации)")
+    g.set_defaults(func=cmd_years)
     y = sub.add_parser("sync", help="ответы человека через git: загрузить knowledge/answers/*.jsonl, выгрузить свои")
     y.set_defaults(func=cmd_sync)
     args = ap.parse_args(argv)

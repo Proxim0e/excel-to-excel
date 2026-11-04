@@ -28,6 +28,7 @@ from src.history.db import DEFAULT_DB, connect
 from src.history import sync as answers_sync
 from src.history.review import REASONS
 from src.ui.card_form import CardForm
+from src.ui.cards_tab import CardsTab
 
 logger = logging.getLogger("ui")
 
@@ -366,8 +367,14 @@ class App:
         self.log_text.pack(fill="both", expand=True)
         panes.add(logf, weight=3)
 
-        qf = self.qf = ttk.Labelframe(panes, text="Вопросы к человеку")
-        panes.add(qf, weight=2)
+        self.tabs = ttk.Notebook(panes)
+        panes.add(self.tabs, weight=2)
+        qf = self.qf = ttk.Labelframe(self.tabs, text="Вопросы к человеку")
+        self.tabs.add(qf, text="Вопросы")
+        self.cards_frame = ttk.Frame(self.tabs)
+        self.tabs.add(self.cards_frame, text="База карточек")
+        self.cards_tab = None                     # строится при первом открытии вкладки
+        self.tabs.bind("<<NotebookTabChanged>>", lambda e: self._open_cards_tab())
         self.root.after(100, lambda: panes.sashpos(0, int(self.root.winfo_width() * 0.45)))
         self.q_list = tk.Listbox(qf, width=30, exportselection=False)
         self.q_list.pack(side="left", fill="y")
@@ -862,6 +869,23 @@ class App:
         row.pack(anchor="w", pady=6)
         ttk.Button(row, text="Медицинское - нужна регистрация AMDM", command=lambda: save(True)).pack(fill="x", pady=2)
         ttk.Button(row, text="Не медицинское - достаточно ISO/CE", command=lambda: save(False)).pack(fill="x", pady=2)
+
+    def _open_cards_tab(self):
+        if self.tabs.select() != str(self.cards_frame):
+            return None
+        if self.cards_tab is None:
+            self.cards_tab = CardsTab(self.cards_frame, self.kb, self._card_dir, self._cards_changed)
+        else:
+            self.cards_tab.reload()
+        return self.cards_tab
+
+    def _cards_changed(self):
+        """Карточку сохранили / удалили во вкладке базы: выгрузить ответы для git, обновить вопросы."""
+        try:
+            answers_sync.export(self.kb, answers_sync.own_file(self.answers_dir))
+        except Exception as e:
+            logger.warning(f"[SYNC] Карточка сохранена в базе, но не выгружена в файл: {e}")
+        self.refresh_questions()
 
     def _card_dir(self, tender_id: str) -> Optional[Path]:
         """Папка тендера вопроса: из поля «Папка тендера», если тот же тендер, иначе downloads/<номер>."""

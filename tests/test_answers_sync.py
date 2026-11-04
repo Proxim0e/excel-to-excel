@@ -94,6 +94,22 @@ class SyncTests(unittest.TestCase):
         finally:
             fresh.close()
 
+    def test_deleted_card_is_deleted_on_other_pc(self):
+        self.answer_all(self.work)
+        with mock.patch.object(sync, "pc_name", return_value="work"):
+            sync.export(self.work, sync.own_file(self.folder))
+        with mock.patch.object(sync, "pc_name", return_value="home"):
+            sync.sync(self.home, self.folder)
+        self.assertEqual(self.home.execute("SELECT source FROM products").fetchone(), ("human",))
+        # на работе карточку удалили позже
+        self.work.execute("UPDATE products SET source = 'deleted', confirmed_at = '2999-01-01T00:00:00'")
+        self.work.commit()
+        with mock.patch.object(sync, "pc_name", return_value="work"):
+            sync.export(self.work, sync.own_file(self.folder))
+        with mock.patch.object(sync, "pc_name", return_value="home"):
+            sync.sync(self.home, self.folder)
+        self.assertEqual(self.home.execute("SELECT source FROM products").fetchone(), ("deleted",))
+
     def test_broken_line_is_skipped(self):
         self.folder.mkdir(parents=True)
         (self.folder / "x.jsonl").write_text('{"t": "type", "word": "DVD-R", "medical": false, "at": "2026"}\n'

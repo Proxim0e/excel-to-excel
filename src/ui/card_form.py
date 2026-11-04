@@ -55,10 +55,17 @@ class Tooltip:
 
 
 class CardForm:
-    def __init__(self, parent: ttk.Frame, kb, q: Dict, tender_dir: Optional[Path], on_save: Callable[[Dict], None]):
-        self.parent, self.kb, self.q, self.on_save = parent, kb, q, on_save
+    def __init__(self, parent: ttk.Frame, kb, q: Dict, tender_dir: Optional[Path], on_save: Callable[[Dict], None],
+                 save_text: str = "Подтвердить карточку"):
+        self.parent, self.kb, self.q, self.on_save, self.save_text = parent, kb, q, on_save, save_text
         payload = q.get("payload") or {}
         self.card = dict(payload.get("card") or {"model_key": q["model_key"]})
+        # пустые поля - из последней оферты этой модели в истории тендеров (по номеру DM)
+        self.from_history = []
+        for k, v in cd.history_card(kb, self.card).items():
+            if v and not self.card.get(k):
+                self.card[k] = v
+                self.from_history.append(k)
         self.lot_no, self.participant = payload.get("lot_no"), payload.get("participant") or ""
         self.lot_title = payload.get("lot_title", "")
         row = kb.execute("SELECT requirement FROM lot_profiles WHERE tender_id = ? AND lot_no = ?",
@@ -78,12 +85,14 @@ class CardForm:
         head = ttk.Frame(f)
         head.pack(fill="x")
         ttk.Label(head, text=f"Карточка товара: {self.card['model_key']}", font=("Segoe UI", 11, "bold")).pack(side="left")
-        self.save_button = ttk.Button(head, text="Подтвердить карточку", command=self.save)
+        self.save_button = ttk.Button(head, text=self.save_text, command=self.save)
         self.save_button.pack(side="right")
 
         lot = ttk.Frame(f)
-        lot.pack(fill="x")
-        ttk.Label(lot, text=f"Из лота {self.lot_no}, {self.participant}: ").pack(side="left")
+        if self.lot_no or self.lot_title:
+            lot.pack(fill="x")
+        ttk.Label(lot, text=f"Из лота {self.lot_no}, {self.participant}: " if self.lot_no else
+                  f"{self.q.get('tender_id') or ''} {self.participant}: ").pack(side="left")
         self.lot_label = tk.Label(lot, text=self.lot_title or "(название лота)", fg="#0645ad", cursor="hand2",
                                   font=("Segoe UI", 9, "underline"))
         self.lot_label.pack(side="left")

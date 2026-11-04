@@ -13,7 +13,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from src.amdm.parse import compact, model_tokens
+from src.amdm.parse import compact, fold, model_tokens
 from src.evaluate.cards import spec_items, split_param
 
 # Технические документы - первыми: в них параметры изделия
@@ -71,20 +71,50 @@ def _codes(card: Dict) -> List[str]:
 
 
 def _dms(card: Dict) -> List[str]:
-    return [d.strip() for d in re.split(r"[,;+ ]", card.get("dm") or "") if d.strip().upper().startswith("DM")]
+    """Номера DM карточки; поле пустое - из ключа модели «DM:DM000152480+DM…»."""
+    text = card.get("dm") or ((card.get("model_key") or "")[3:] if (card.get("model_key") or "").startswith("DM:") else "")
+    return [d.strip() for d in re.split(r"[,;+ ]", text) if d.strip().upper().startswith("DM")]
 
 
-def _period(year: Optional[str], tender_id: str, current_tender: str) -> str:
+def _period(year: Optional[int], tender_id: str, current_tender: str, current_year: int) -> str:
+    """«этот тендер», «этот год (2026)», «прошлый год (2025)» или просто год - по году публикации тендера."""
     if tender_id == current_tender:
         return "этот тендер"
-    now = datetime.now().year
     if not year:
-        return "раньше"
-    y = int(year)
-    return "этот год" if y == now else ("прошлый год" if y == now - 1 else str(y))
+        return "год неизвестен"
+    if year == current_year:
+        return f"этот год ({year})"
+    if year == current_year - 1:
+        return f"прошлый год ({year})"
+    return str(year)
 
 
-PERIOD_ORDER = {"этот тендер": 0, "этот год": 1, "прошлый год": 2}
+COMPANY_NOISE = {"im", "îm", "m", "sc", "s", "c", "r", "l", "srl", "sa", "s.a", "s.r.l", "ii", "îi", "ici", "ltd", "llc",
+                 "co", "com", "of", "de"}
+
+
+def company_key(name: str) -> str:
+    """«IM Vivamed International SRL», «M Vivamed International SRL», «Vivamed International S.R.L.» - одна
+    фирма: без формы собственности, кавычек и знаков."""
+    words = re.findall(r"[^\W_]+", fold(name or "").lower())
+    words = [w for w in words if w not in COMPANY_NOISE]
+    return " ".join(words) or (name or "").strip().lower()
+
+
+def history_card(kb: sqlite3.Connection, card: Dict) -> Dict:
+    """Последняя оферта этой модели в истории (по номеру DM): производитель, модель, DM, название лота -
+    чтобы дозаполнить пустую карточку."""
+    dms = _dms(card)
+    if not dms:
+        return {}
+    for d in dms:
+        row = kb.execute("SELECT o.producer, o.model, o.dm, l.title FROM current_offers o "
+                         "LEFT JOIN lots l ON l.snapshot_id = o.snapshot_id AND l.sheet = o.sheet "
+                         "WHERE o.dm LIKE ? ORDER BY o.snapshot_id DESC LIMIT 1", (f"%{d}%",)).fetchone()
+        if row:
+            return {"producer": row[0], "model": row[1], "dm": row[2],
+                    "name": re.sub(r"^\s*lot\s*nr\.?\s*\d+\s*", "", row[3] or "", flags=re.IGNORECASE)}
+    return {}
 
 
 def _offer_matches(dm: str, model: str, dms: List[str], codes: List[str]) -> bool:
@@ -96,30 +126,42 @@ def _offer_matches(dm: str, model: str, dms: List[str], codes: List[str]) -> boo
 
 def agent_candidates(kb: sqlite3.Connection, card: Dict, tender_id: str, participant: str = "") -> List[Dict]:
     """Кто предлагал эту модель: {name, period, tender_id, lot_no, decision, won}. Текущий участник - первым."""
+    from src.history.tender_year import fallback_year, known_years
     dms, codes = _dms(card), _codes(card)
     out: Dict[Tuple[str, str], Dict] = {}
+    years = known_years(kb)                       # год публикации с achizitii.md (кеш в базе)
+    current_year = years.get(tender_id) or datetime.now().year
 
     def add(name, tid, lot, year, decision, won):
-        period = _period(year, tid, tender_id)
-        key = (name.strip(), tid)
+        year = years.get(tid) or year
+        period = _period(year, tid, tender_id, current_year)
+        key = (company_key(name), tid)
         if not name.strip() or (key in out and not won):
             return
         out[key] = {"name": name.strip(), "period": period, "tender_id": tid, "lot_no": lot, "decision": decision,
                     "won": won, "year": year}
 
     if participant:
-        add(participant, tender_id, None, str(datetime.now().year), "", False)
+        add(participant, tender_id, None, current_year, "", False)
     for name, tid, lot, status, at in kb.execute(
             "SELECT participant, tender_id, lot_no, status, decided_at FROM evaluations WHERE model_key = ?",
             (card.get("model_key"),)):
-        add(name, tid, lot, (at or "")[:4], status, status == "corespunde")
+        add(name, tid, lot, int(at[:4]) if at and at[:4].isdigit() else None, status, status == "corespunde")
     rows = kb.execute("SELECT o.participant, o.tender_id, o.lot_no, o.dm, o.model, o.final_decision, "
-                      "s.file_mtime FROM current_offers o JOIN snapshots s ON s.id = o.snapshot_id").fetchall()
-    for name, tid, lot, dm, model, decision, mtime in rows:
+                      "s.file_mtime, s.source_file FROM current_offers o JOIN snapshots s ON s.id = o.snapshot_id").fetchall()
+    for name, tid, lot, dm, model, decision, mtime, source in rows:
         if _offer_matches(dm, model, dms, codes):
-            add(name, tid, lot, (mtime or "")[:4], decision, decision == "accepted")
-    return sorted(out.values(), key=lambda a: (a["name"] != participant, PERIOD_ORDER.get(a["period"], 3),
-                                               -(int(a["year"]) if (a["year"] or "").isdigit() else 0), a["name"]))
+            add(name, tid, lot, fallback_year(source, mtime), decision, decision == "accepted")
+    # одна фирма в разных написаниях - имя как у текущего участника / самое частое
+    names: Dict[str, Dict[str, int]] = {}
+    for a in out.values():
+        names.setdefault(company_key(a["name"]), {}).setdefault(a["name"], 0)
+        names[company_key(a["name"])][a["name"]] += 1
+    for a in out.values():
+        variants = names[company_key(a["name"])]
+        a["name"] = participant if company_key(participant) == company_key(a["name"]) and participant else             max(variants, key=variants.get)
+    return sorted(out.values(), key=lambda a: (a["name"] != participant, a["period"] != "этот тендер",
+                                               -(a["year"] or 0), a["name"]))
 
 
 def agent_label(a: Dict) -> str:

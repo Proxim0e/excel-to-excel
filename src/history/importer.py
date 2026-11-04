@@ -72,6 +72,11 @@ def read_workbook(path: Path):
             lot_no, suffix = sheet_suffix(ws.title)
             if lot_no is None:
                 continue
+            if is_legacy(ws):
+                lot, legacy = read_legacy_sheet(ws, lot_no, suffix)
+                lots.append(lot)
+                offers.extend(legacy)
+                continue
             quantity, base_value = _num(ws["A1"].value), _num(ws["D8"].value)
             note_col = next((c for c in range(FIRST_PARTICIPANT_COL, ws.max_column + 1)
                              if _clean(ws.cell(row=1, column=c).value) and
@@ -107,6 +112,82 @@ def read_workbook(path: Path):
     for o in offers:
         _reason_from_clarifications(o)
     return lots, offers
+
+
+# --- старые форматы (2024-2025): участник с колонки B/C, решение - цветом ячеек спецификации ---------------------
+RED, GREEN, BLUE, YELLOW = "FFFF0000", "FF00B050", "FF00B0F0", "FFFFFF00"
+LEGACY_LAST_ROW = 40
+
+
+def _ofertant_cols(ws) -> List[int]:
+    return [c for c in range(1, min(ws.max_column, 60) + 1)
+            if (_clean(ws.cell(row=2, column=c).value) or "").lower().startswith("ofertant")]
+
+
+def is_legacy(ws) -> bool:
+    """Нынешний формат: «Ofertant» в строке 2 с колонки E. Иначе (B/C/D) - старый."""
+    cols = _ofertant_cols(ws)
+    return bool(cols) and min(cols) < FIRST_PARTICIPANT_COL
+
+
+def _legacy_decision(colors: List[str], tab: Optional[str]) -> Tuple[str, Optional[str]]:
+    """Решение по цветам ячеек оферты (DM и спецификация): красный - отказ, голубой - альтернатива,
+    жёлтый - уточнение, только зелёный - принят. Без цветов - не оценено."""
+    if RED in colors:
+        return "rejected", "technical"
+    if BLUE in colors:
+        return "alternative", None
+    if YELLOW in colors:
+        return "clarification", None
+    if GREEN in colors:
+        return "accepted", None
+    return "not_evaluated", None
+
+
+def read_legacy_sheet(ws, lot_no: int, suffix: str):
+    """Лист старого формата -> (лот, оферты). Цены - по подписям в колонке A («Suma estimata», «pret per pcs»)."""
+    tab = _tab(ws)
+    title = next((_clean(ws.cell(row=1, column=c).value) for c in range(1, 4)
+                  if (_clean(ws.cell(row=1, column=c).value) or "").lower().startswith("lot")), None)
+    cols = _ofertant_cols(ws)
+    first = min(cols)
+    labels = {r: (_clean(ws.cell(row=r, column=1).value) or "").lower() for r in range(4, 9)}
+    row_of = lambda word: next((r for r, t in labels.items() if word in t), None)   # noqa: E731
+    r_sum, r_price = row_of("suma"), row_of("pret")
+    # требование: колонка перед первым участником, строки спецификации
+    spec_start = 8 if r_sum else 6
+    req_col = first - 1 if first > 1 else 1
+    requirement = "\n".join(x for x in (_clean(ws.cell(row=r, column=req_col).value)
+                                        for r in range(spec_start, LEGACY_LAST_ROW)) if x) or None
+    base_value = _num(ws.cell(row=r_sum, column=req_col).value) if r_sum else None
+    lot = dict(lot_no=lot_no, sheet=ws.title, title=title, quantity=None, unit=None,
+               base_price=_num(ws.cell(row=r_price, column=req_col).value) if r_price else None,
+               base_value=base_value, requirement=requirement, suffix=suffix, tab_color=tab,
+               outcome=lot_outcome(tab, suffix), note=None)
+    offers = []
+    for col in cols:
+        participant = (_clean(ws.cell(row=2, column=col).value) or "").split(":", 1)[-1].strip(" :")
+        if not participant:
+            continue
+        p3 = parse_row3(ws.cell(row=3, column=col).value)
+        dm_text = " ".join(x for x in (_clean(ws.cell(row=r, column=col).value) for r in (4, 5)) if x)
+        dms = parse_row4(dm_text)["dm_numbers"]
+        spec_cells = [ws.cell(row=r, column=col) for r in range(spec_start, LEGACY_LAST_ROW)]
+        spec = "\n".join(x for x in (_clean(c.value) for c in spec_cells) if x)
+        colors = [c for c in (_rgb(ws.cell(row=r, column=col)) for r in (4, 5)) if c] + \
+                 [c for c in (_rgb(cell) for cell in spec_cells) if c]
+        decision, reason = _legacy_decision(colors, tab)
+        value = _num(ws.cell(row=r_sum, column=col).value) if r_sum else None
+        spec_main, _, notes = spec.partition("//")
+        offers.append(Offer(lot_no, ws.title, col, participant, dict(
+            producer=p3.get("producer"), country=p3.get("country"), model=p3.get("model"),
+            dm=",".join(dms) or None, row4=_clean(ws.cell(row=4, column=col).value),
+            unit_price=_num(ws.cell(row=r_price, column=col).value) if r_price else None, offer_value=value,
+            price_ratio=(value / base_value) if value and base_value else None, row10=None, previous_winner=0,
+            spec=spec_main.strip() or None, spec_notes=("//" + notes).strip() if notes else None,
+            row1_text=None, row1_color=None, row11_color=colors[-1] if colors else None,
+            decision=decision, reason=reason, needs_review=None)))
+    return lot, offers
 
 
 def _reason_from_clarifications(offer: Offer) -> None:
@@ -150,7 +231,8 @@ def tender_id_from(path: Path) -> Optional[str]:
     return m.group(1) if m else None
 
 
-def import_workbook(conn, path: Path, tender_id: Optional[str] = None, force: bool = False) -> dict:
+def import_workbook(conn, path: Path, tender_id: Optional[str] = None, force: bool = False,
+                    online: bool = False) -> dict:
     """Новый снимок тендера и события относительно предыдущего. Без изменений файла - пропуск
     (force - перечитать тот же файл, например после улучшения импорта)."""
     path = Path(path)
@@ -187,6 +269,8 @@ def import_workbook(conn, path: Path, tender_id: Optional[str] = None, force: bo
                          "VALUES (?, ?, ?, ?, ?, ?, ?)", (sid, o.lot_no, o.participant, col, label, text, color))
     events = _diff(conn, tender_id, prev[0], sid, now) if prev else []
     conn.commit()
+    from src.history.tender_year import tender_year
+    tender_year(conn, tender_id, str(path), None, online=online)
     return {"tender_id": tender_id, "snapshot_id": sid, "skipped": False, "lots": len(lots),
             "offers": len(offers), "events": events}
 

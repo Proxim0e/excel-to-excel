@@ -180,6 +180,45 @@ class AppTests(unittest.TestCase):
         self.assertEqual(row[:2], ("Electeh SRL", "Labromed (2025, 21600000)"))
         self.assertEqual(row[3], "human")
 
+    def test_cards_tab_edit_new_delete(self):
+        from src.evaluate.cards import save_card
+        save_card(self.app.kb, {"model_key": "DM:DM1", "producer": "Fiab", "model": "F4141", "dm": "DM1",
+                                "params": {"Diametru": "5 mm"}}, source="prefill")
+        save_card(self.app.kb, {"model_key": "M:intco|sf01", "producer": "Intco", "model": "SF01"}, source="human")
+        self.app.tabs.select(self.app.cards_frame)
+        tab = self.app._open_cards_tab()
+        self.assertEqual(len(tab.tree.get_children()), 2)
+        tab.search_var.set("fiab")
+        tab.fill()
+        self.assertEqual(tab.tree.get_children(), ("DM:DM1",))
+        tab.filter_var.set("подтверждённые")
+        tab.search_var.set("")
+        tab.fill()
+        self.assertEqual(tab.tree.get_children(), ("M:intco|sf01",))
+        tab.filter_var.set("все")
+        tab.fill()
+        # редактирование: предложенная карточка -> подтверждена, параметр изменён
+        tab.tree.selection_set("DM:DM1")
+        form = tab.edit_selected()
+        self.assertEqual(form.save_button.cget("text"), "Подтвердить карточку")
+        form.param_widgets[0]["value"].set("6 mm")
+        form.save_button.invoke()
+        self.assertEqual(self.app.kb.execute("SELECT source, params FROM products WHERE model_key = 'DM:DM1'").fetchone(),
+                         ("human", '{"Diametru": "6 mm"}'))
+        self.assertTrue((self.app.answers_dir).glob("*.jsonl"))
+        # новая карточка по номеру DM
+        form = tab.new_card("DM000777")
+        form.entries["producer"].insert(0, "Natus")
+        form.save_button.invoke()
+        self.assertEqual(self.app.kb.execute("SELECT producer FROM products WHERE model_key = 'DM:DM000777'").fetchone(),
+                         ("Natus",))
+        # удаление - метка, из списка пропадает
+        tab.tree.selection_set("M:intco|sf01")
+        tab.delete_selected(confirm=False)
+        self.assertNotIn("M:intco|sf01", tab.tree.get_children())
+        self.assertEqual(self.app.kb.execute("SELECT source FROM products WHERE model_key = 'M:intco|sf01'").fetchone(),
+                         ("deleted",))
+
     def test_medical_type_question_in_window(self):
         from src.evaluate.answers import ask_medical_type, human_types
         kb = connect(self.db)

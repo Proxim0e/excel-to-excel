@@ -46,8 +46,12 @@ def collect(kb: sqlite3.Connection) -> List[Dict]:
     """Все ответы человека из базы: записи с ключом t (product / offer / type) и временем ответа at."""
     out: List[Dict] = []
     cols = ", ".join(PRODUCT_COLS)
-    for row in kb.execute(f"SELECT {cols}, COALESCE(confirmed_at, updated_at) FROM products WHERE source = 'human'"):
-        rec = {"t": "product", **dict(zip(PRODUCT_COLS, row[:-1])), "at": row[-1]}
+    for row in kb.execute(f"SELECT {cols}, source, COALESCE(confirmed_at, updated_at) FROM products "
+                          f"WHERE source IN ('human', 'deleted')"):
+        if row[-2] == "deleted":      # удалена во вкладке «База карточек» - метка, чтобы другой ПК тоже удалил
+            out.append({"t": "product", "model_key": row[0], "deleted": True, "at": row[-1]})
+            continue
+        rec = {"t": "product", **dict(zip(PRODUCT_COLS, row[:-2])), "at": row[-1]}
         rec["params"] = json.loads(rec["params"] or "{}")
         out.append(rec)
     comments = {(r[0], r[1], r[2]): json.loads(r[3] or "{}").get("comment", "")
@@ -119,7 +123,14 @@ def apply(kb: sqlite3.Connection, records: Iterable[Dict]) -> Dict[str, int]:
         if rec["t"] == "product":
             row = kb.execute("SELECT source, COALESCE(confirmed_at, updated_at) FROM products WHERE model_key = ?",
                              (rec["model_key"],)).fetchone()
-            if row and row[0] == "human" and (row[1] or "") >= at:
+            if rec.get("deleted"):
+                if not row or row[0] == "deleted" or (row[1] or "") >= at:
+                    continue
+                kb.execute("UPDATE products SET source = 'deleted', confirmed_at = ?, updated_at = ? "
+                           "WHERE model_key = ?", (at, at, rec["model_key"]))
+                stats["product"] += 1
+                continue
+            if row and row[0] in ("human", "deleted") and (row[1] or "") >= at:
                 continue
             vals = [rec.get(c) for c in PRODUCT_COLS]
             vals[PRODUCT_COLS.index("params")] = json.dumps(rec.get("params") or {}, ensure_ascii=False)
