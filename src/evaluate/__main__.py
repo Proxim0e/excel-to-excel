@@ -33,6 +33,9 @@ def main(argv=None) -> int:
         kb.executescript(SCHEMA)
     else:
         kb = connect(args.db)
+        from src.history.sync import sync
+        if Path(args.db) == Path(DEFAULT_DB):
+            sync(kb)                  # ответы человека с других ПК - до оценки, чтобы не спрашивать повторно
     try:
         evs = evaluate_tender(args.result, args.tender_dir, kb, offline=not args.online)
         by = Counter((e.status, e.source) for e in evs)

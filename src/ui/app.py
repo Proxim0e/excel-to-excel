@@ -26,6 +26,7 @@ from src.evaluate import confidence as cf
 from src.evaluate.answers import answer_card, answer_medical, answer_offer, open_questions
 from src.evaluate.cards import CARD_FIELDS
 from src.history.db import DEFAULT_DB, connect
+from src.history import sync as answers_sync
 from src.history.review import REASONS
 
 logger = logging.getLogger("ui")
@@ -170,8 +171,11 @@ def parent_info():
 
 class App:
     def __init__(self, root: tk.Tk, result: Optional[Path] = None, tender_dir: Optional[Path] = None,
-                 db: Path = DEFAULT_DB):
+                 db: Path = DEFAULT_DB, answers_dir: Optional[Path] = None):
         self.root, self.db = root, Path(db)
+        # ответы человека для git; в тестах - временная папка (по умолчанию - knowledge/answers, только с боевой базой)
+        self.answers_dir = Path(answers_dir) if answers_dir else (
+            answers_sync.ANSWERS_DIR if Path(db) == Path(DEFAULT_DB) else Path(db).parent / "answers")
         self.kb = connect(self.db)            # соединение окна; у фоновых задач - свои
         self.log_queue: "queue.Queue" = queue.Queue()
         self.ui_calls: "queue.Queue" = queue.Queue()   # действия с окном из фоновых потоков (Tk - только из главного)
@@ -204,6 +208,23 @@ class App:
         self._attach_log()
         self.root.after(200, self._poll_log)
         self.root.after(1000, self._poll_questions)
+        self.sync_answers()
+        self.refresh_questions()
+
+    def sync_answers(self):
+        """Ответы человека с других ПК (knowledge/answers/*.jsonl после git pull) - в базу, свои - в файл ПК."""
+        try:
+            answers_sync.sync(self.kb, self.answers_dir)
+        except Exception as e:  # файл ответов битый / занят - окно работает и без него
+            logger.warning(f"[SYNC] Ответы с других ПК не загружены: {e}")
+
+    def _answered(self):
+        """После ответа: выгрузить ответы этого ПК (для git) и обновить список вопросов."""
+        try:
+            answers_sync.export(self.kb, answers_sync.own_file(self.answers_dir))
+        except Exception as e:
+            logger.warning(f"[SYNC] Ответ сохранён в базе, но не выгружен в файл: {e}")
+        self.current = None
         self.refresh_questions()
 
     # --- как будем работать: выбор при запуске окна ---------------------------------------------------------
@@ -810,8 +831,7 @@ class App:
         def save():
             answer_offer(self.kb, q["id"], choice.get(), reason.get() or None, comment.get())
             logger.info(f"[UI] Лот {q['lot_no']}, {q['participant']}: {STATUS_LABELS[choice.get()]}")
-            self.current = None
-            self.refresh_questions()
+            self._answered()
         ttk.Button(self.form, text="Сохранить решение", command=save).pack(anchor="e", pady=6)
 
     def _medical_form(self, q: Dict):
@@ -840,8 +860,7 @@ class App:
             answer_medical(self.kb, q["id"], medical, comment.get())
             logger.info(f"[UI] Тип «{word}»: {'медицинское' if medical else 'не медицинское'} изделие - "
                         f"применится при следующей проверке AMDM / оценке")
-            self.current = None
-            self.refresh_questions()
+            self._answered()
         row = ttk.Frame(self.form)
         row.pack(anchor="w", pady=6)
         ttk.Button(row, text="Медицинское - нужна регистрация AMDM", command=lambda: save(True)).pack(fill="x", pady=2)
@@ -879,8 +898,7 @@ class App:
                 return
             answer_card(self.kb, q["id"], new)
             logger.info(f"[UI] Карточка подтверждена: {card['model_key']}")
-            self.current = None
-            self.refresh_questions()
+            self._answered()
         ttk.Button(self.form, text="Подтвердить карточку", command=save).pack(anchor="e", pady=6)
 
 

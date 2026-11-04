@@ -9,12 +9,15 @@
 1. `git pull` текущей ветки (сейчас рабочая — `feature/stage5-history`).
 2. `python -m src.envcheck` — среда совпадает с `requirements.txt`? Если нет: `powershell -ExecutionPolicy Bypass -File setup_env.ps1`.
    Разная среда на двух ПК уже ломала запуск (02.11.2026: PyMuPDF не той версии — Anexa 22 не нашлась).
-3. Прочитать верхние записи [docs/LOGBOOK.md](docs/LOGBOOK.md): что сделано и что открыто.
+3. Ответы человека с другого ПК (карточки, решения по офертам, «медицинское ли изделие») приезжают с `git pull`
+   в `knowledge/answers/<ПК>.jsonl` и подмешиваются в `data/knowledge.sqlite` сами при открытии окна (вручную —
+   `python -m src.history sync`).
+4. Прочитать верхние записи [docs/LOGBOOK.md](docs/LOGBOOK.md): что сделано и что открыто.
 
 ## Конец сессии
 
 Дописать запись в `docs/LOGBOOK.md` (сверху: дата · ветка · компьютер — Сделано / Обнаружено / Решено /
-Открыто / Цифры), закоммитить вместе с кодом и запушить.
+Открыто / Цифры), закоммитить вместе с кодом и файлом ответов `knowledge/answers/` и запушить.
 
 ## Документы
 
@@ -34,7 +37,8 @@
 | Оценка | `python -m src.evaluate <result.xlsx> downloads/<тендер> [--dry-run] [--online]` | решения и вопросы в `data/knowledge.sqlite` |
 | Тесты | `pytest` | |
 
-`downloads/`, `resources/*.xlsx`, `resources/amdm_registry.sqlite`, `data/` — не в git: на другом ПК их нет,
+`downloads/`, `resources/*.xlsx`, `resources/amdm_registry.sqlite`, `data/` — не в git (ответы человека из
+`data/knowledge.sqlite` переносятся через `knowledge/answers/`, см. выше): на другом ПК их нет,
 тендер нужно скачать заново (или скопировать папку вручную).
 
 ## Правила, о которых договорились

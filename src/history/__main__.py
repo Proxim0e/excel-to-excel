@@ -122,6 +122,18 @@ def cmd_catalog(args) -> int:
     return 0
 
 
+def cmd_sync(args) -> int:
+    from src.history.sync import sync
+    kb = connect(args.db)
+    try:
+        st = sync(kb)
+    finally:
+        kb.close()
+    print(f"С других ПК: карточек {st['product']}, решений {st['offer']}, типов {st['type']}; "
+          f"закрыто вопросов {st['closed']}. Ответов этого ПК в файле: {st['exported']}")
+    return 0
+
+
 def main(argv=None) -> int:
     sys.stdout.reconfigure(encoding="utf-8")
     ap = argparse.ArgumentParser(prog="python -m src.history", description="База знаний: история тендеров")
@@ -148,6 +160,8 @@ def main(argv=None) -> int:
     k = sub.add_parser("catalog", help="все модели и оферты в Excel (data/catalog.xlsx)")
     k.add_argument("--out")
     k.set_defaults(func=cmd_catalog)
+    y = sub.add_parser("sync", help="ответы человека через git: загрузить knowledge/answers/*.jsonl, выгрузить свои")
+    y.set_defaults(func=cmd_sync)
     args = ap.parse_args(argv)
     return args.func(args)
 
