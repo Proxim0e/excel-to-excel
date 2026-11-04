@@ -34,6 +34,13 @@ CREATE TABLE IF NOT EXISTS amdm_not_found (
 CREATE INDEX IF NOT EXISTS amdm_record_order_date ON amdm_record(order_date);
 -- Поиск по колонке реестра (каталожный номер / модель), когда в оферте нет номера DM:
 -- запрос -> номера DM первой страницы результата (пусто - не найдено)
+-- Тип изделия (первое слово названия лота): сколько записей реестра с таким названием - медицинский ли тип
+CREATE TABLE IF NOT EXISTS amdm_type (
+    word TEXT PRIMARY KEY,
+    medical INTEGER NOT NULL,
+    total INTEGER NOT NULL,
+    checked_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS amdm_search (
     field TEXT NOT NULL,
     query TEXT NOT NULL,
@@ -113,4 +120,27 @@ class RegistryCache:
             self.put(r, source="site-search")
         self.db.execute("INSERT OR REPLACE INTO amdm_search (field, query, dms, checked_at) VALUES (?, ?, ?, ?)",
                         (field, query, ",".join(r.dm for r in records), datetime.now().isoformat(timespec="seconds")))
+        self.db.commit()
+
+    # --- медицинский ли тип изделия ------------------------------------------
+    TYPE_TTL_DAYS = 30
+
+    def _type_row(self, word: str, now: Optional[datetime] = None):
+        row = self.db.execute("SELECT medical, checked_at FROM amdm_type WHERE word = ?", (word,)).fetchone()
+        if not row or (now or datetime.now()) - datetime.fromisoformat(row[1]) >= timedelta(days=self.TYPE_TTL_DAYS):
+            return None
+        return row
+
+    def type_checked(self, word: str) -> bool:
+        return self._type_row(word) is not None
+
+    def get_type(self, word: str) -> Optional[bool]:
+        """True - медицинский тип, False - в реестре таких нет, None - не проверяли или нельзя сказать."""
+        row = self._type_row(word)
+        return None if row is None or row[0] < 0 else bool(row[0])
+
+    def put_type(self, word: str, medical: Optional[bool], total: int) -> None:
+        value = -1 if medical is None else int(medical)
+        self.db.execute("INSERT OR REPLACE INTO amdm_type (word, medical, total, checked_at) VALUES (?, ?, ?, ?)",
+                        (word, value, total, datetime.now().isoformat(timespec="seconds")))
         self.db.commit()

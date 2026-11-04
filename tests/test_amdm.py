@@ -141,6 +141,28 @@ class CheckOfferTest(unittest.TestCase):
         [r] = check_offer(o, {}, set(), {})
         self.assertIn("Номера DM нет, указаны: CE", r.reasons[0])
 
+    def test_medical_type_by_registry(self):
+        from src.amdm.medical import is_medical_type, registry_query, type_variants, type_word
+        self.assertEqual(type_word("Lot nr. 234 DVD-R+plicuri  ( 007260 )"), "DVD-R")
+        self.assertEqual(type_word("Hârtie termosensibilă, 50mm"), "Hârtie")
+        self.assertEqual(registry_query("Hârtie"), "rtie")            # в реестре «HÂRTIE»
+        self.assertEqual(type_variants("Test-indicator"), ["Test-indicator", "indicator"])
+        # «CD/DVD» только у считывателей дисков - сами DVD-R в реестре не регистрируются
+        self.assertFalse(is_medical_type("DVD-R", 3, ["CITITOR DE DISCURI MEDICALE CD/DVD"]))
+        self.assertTrue(is_medical_type("Hârtie", 1272, []))
+        self.assertTrue(is_medical_type("Gel", 4, ["GEL ECG"]))
+
+    def test_non_medical_offer_needs_no_dm(self):
+        dvd = offer(producer="Verbatim", model="DVD-R 4.7 GB", dm_numbers=[], order=None, order_date=None,
+                    quality_docs=["ISO", "CE"], lot_title="Lot nr. 234 DVD-R+plicuri ( 007260 )")
+        [r] = check_offer(dvd, {}, set(), {}, {"DVD-R": False})
+        self.assertEqual(r.status, OK)
+        self.assertIn("Не медицинское изделие", r.reasons[0])
+        self.assertIn("ISO, CE", r.reasons[0])
+        # тип медицинский или неизвестен - как раньше
+        [r] = check_offer(dvd, {}, set(), {}, {"DVD-R": None})
+        self.assertEqual(r.status, CHECK)
+
     def test_search_cache(self):
         import tempfile
         from pathlib import Path

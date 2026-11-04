@@ -122,6 +122,43 @@ def collect_by_name(cache: RegistryCache, codes, offline: bool, headless: bool) 
     return found
 
 
+def collect_types(cache: RegistryCache, titles, offline: bool, headless: bool) -> dict:
+    """Оферты без номера DM: тип изделия (первое слово названия лота) -> медицинский ли он по реестру
+    (True / False; None - неизвестно: offline и раньше не проверяли). Ответ хранится в копии реестра 30 дней."""
+    from src.amdm.medical import is_medical_type, registry_query, type_variants, type_word
+    words = sorted({w for w in (type_word(t) for t in titles) if w})
+    variants = {w: type_variants(w) for w in words}
+    known = {v: cache.get_type(v) for vs in variants.values() for v in vs}
+    to_check = [v for v in known if not cache.type_checked(v)]
+    logger.info(f"[AMDM] Типов изделий у оферт без номера DM: {len(words)}; проверить в реестре: "
+                f"{0 if offline else len(to_check)}")
+    if to_check and not offline:
+        from src.amdm.fetch import PlaywrightFetcher
+        try:
+            with PlaywrightFetcher(headless=headless) as fetcher:
+                for i, v in enumerate(to_check, start=1):
+                    try:
+                        total, recs = fetcher.search_total("name", registry_query(v))
+                    except Exception as e:
+                        logger.warning(f"[AMDM] тип «{v}» - ошибка: {str(e).splitlines()[0][:120]}; пропускаю")
+                        continue
+                    medical = is_medical_type(v, total, [r.name for r in recs])
+                    cache.put_type(v, medical, total)
+                    known[v] = medical
+                    logger.info(f"[AMDM] тип: {i}/{len(to_check)} ({100 * i / len(to_check):.0f}%) «{v}» → "
+                                f"{ {True: 'медицинский', False: 'в реестре таких изделий нет - не медицинский', None: 'неясно (буквы без диакритики)'}[medical] } "
+                                f"(записей по «{registry_query(v)}»: {total})")
+        except ImportError:
+            logger.error("Не установлен playwright: проверка типа изделия пропущена.")
+        except Exception as e:
+            logger.error(f"Проверка типа изделия прервана: {e}. Найденное сохранено.")
+    result = {}
+    for w, vs in variants.items():
+        flags = [known.get(v) for v in vs]
+        result[w] = True if any(f is True for f in flags) else (False if all(f is False for f in flags) else None)
+    return result
+
+
 def cmd_check(args) -> int:
     src = Path(args.workbook)
     wb = load_workbook_tolerant(src)
@@ -132,10 +169,12 @@ def cmd_check(args) -> int:
         records, site_checked = collect_records(cache, numbers, args.offline, not args.show_browser)
         codes = [c for o in offers if not o.dm_numbers for c in search_codes(o)]
         by_name = collect_by_name(cache, codes, args.offline, not args.show_browser)
+        medical = collect_types(cache, [o.lot_title for o in offers if not o.dm_numbers], args.offline,
+                                not args.show_browser)
     finally:
         cache.close()
 
-    results = [r for o in offers for r in check_offer(o, records, site_checked, by_name)]
+    results = [r for o in offers for r in check_offer(o, records, site_checked, by_name, medical)]
     for r in results:
         why = f" — {'; '.join(r.reasons)[:160]}" if r.status != "verde" and r.reasons else ""
         logger.info(f"[AMDM] {r.offer.sheet}, {r.offer.supplier}: {r.dm or 'без DM'} {r.status}{why}")

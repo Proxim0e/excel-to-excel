@@ -116,7 +116,8 @@ def offer_model_key(offer: Optional[dict]) -> Optional[str]:
 
 
 def evaluate_participant(lot: Lot, p: Participant, manifest: sqlite3.Connection, kb: sqlite3.Connection,
-                         amdm_records: dict, site_checked: set, by_name: Optional[dict] = None) -> Evaluation:
+                         amdm_records: dict, site_checked: set, by_name: Optional[dict] = None,
+                         medical: Optional[dict] = None) -> Evaluation:
     key = offer_model_key(p.offer)
 
     def result(status, source, conf, reasons, code=None, findings=None, ask_card=False):
@@ -142,7 +143,7 @@ def evaluate_participant(lot: Lot, p: Participant, manifest: sqlite3.Connection,
 
     amdm_status, amdm_reasons, checks = None, [], []
     if p.registration:
-        checks = amdm_check(p.registration, amdm_records, site_checked, by_name)
+        checks = amdm_check(p.registration, amdm_records, site_checked, by_name, medical)
         if checks:
             amdm_status = overall_status(checks)
             amdm_reasons = [r for c in checks for r in c.reasons]
@@ -161,16 +162,17 @@ def evaluate_participant(lot: Lot, p: Participant, manifest: sqlite3.Connection,
     return result(d.status, d.source, d.confidence, d.reasons, d.reason_code, findings, d.ask_card)
 
 
-def evaluate_lot(lot: Lot, manifest, kb, amdm_records, site_checked, by_name: Optional[dict] = None) -> List[Evaluation]:
+def evaluate_lot(lot: Lot, manifest, kb, amdm_records, site_checked, by_name: Optional[dict] = None,
+                 medical: Optional[dict] = None) -> List[Evaluation]:
     """Все участники лота, по цене (без цены - в конце)."""
     order = sorted(lot.participants, key=lambda p: (p.ratio is None, p.ratio or 0))
-    return [evaluate_participant(lot, p, manifest, kb, amdm_records, site_checked, by_name) for p in order]
+    return [evaluate_participant(lot, p, manifest, kb, amdm_records, site_checked, by_name, medical) for p in order]
 
 
 def amdm_lookup(lots: List[Lot], offline: bool = True):
     """Записи реестра AMDM по всем номерам DM тендера (локальная копия; offline=False - и сайт) и, для оферт
     без номера DM, записи, найденные по коду модели. Возвращает (records, site_checked, by_name)."""
-    from src.amdm.__main__ import DEFAULT_DB, collect_by_name, collect_records
+    from src.amdm.__main__ import DEFAULT_DB, collect_by_name, collect_records, collect_types
     from src.amdm.cache import RegistryCache
     from src.amdm.matcher import search_codes
     regs = [p.registration for lot in lots for p in lot.participants if p.registration]
@@ -178,8 +180,10 @@ def amdm_lookup(lots: List[Lot], offline: bool = True):
     cache = RegistryCache(Path(DEFAULT_DB))
     try:
         records, site_checked = collect_records(cache, numbers, offline, True)
-        by_name = collect_by_name(cache, [c for r in regs if not r.dm_numbers for c in search_codes(r)], offline, True)
-        return records, site_checked, by_name
+        no_dm = [r for r in regs if not r.dm_numbers]
+        by_name = collect_by_name(cache, [c for r in no_dm for c in search_codes(r)], offline, True)
+        medical = collect_types(cache, [r.lot_title for r in no_dm], offline, True)
+        return records, site_checked, by_name, medical
     finally:
         cache.close()
 
@@ -244,12 +248,12 @@ def evaluate_tender(result_path: Path, tender_dir: Path, kb: sqlite3.Connection,
     """Оценка всего тендера; on_lot(lot, решения) - после каждого лота (окно приложения, прогресс)."""
     lots = read_lots(result_path, tender_dir)
     logger.info(f"[EVAL] Лотов: {len(lots)}, оферт: {sum(len(l.participants) for l in lots)}")
-    records, site_checked, by_name = amdm_lookup(lots, offline)
+    records, site_checked, by_name, medical = amdm_lookup(lots, offline)
     manifest = sqlite3.connect(Path(tender_dir) / MANIFEST_NAME)
     evaluations = []
     try:
         for i, lot in enumerate(lots, start=1):
-            evs = evaluate_lot(lot, manifest, kb, records, site_checked, by_name)
+            evs = evaluate_lot(lot, manifest, kb, records, site_checked, by_name, medical)
             for ev in evs:
                 asked = save(kb, ev, lot)
                 logger.info(f"[EVAL] лот {lot.lot_no} ({i}/{len(lots)}, {100 * i / len(lots):.0f}%), "

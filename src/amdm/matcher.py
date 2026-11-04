@@ -16,6 +16,7 @@ from typing import List, Optional, Tuple
 
 from src.amdm.models import (OfferRegistration, RegistryRecord, CheckResult,
                              OK, CHECK, FAIL, NO_DM, IN_PROGRESS)
+from src.amdm.medical import type_word
 from src.amdm.parse import fold, compact, model_tokens
 
 LEGAL_FORMS = re.compile(
@@ -192,7 +193,7 @@ def check_by_name(offer: OfferRegistration, found: List[RegistryRecord], searche
 
 
 def check_offer(offer: OfferRegistration, records: dict, site_checked: set,
-                by_name: Optional[dict] = None) -> List[CheckResult]:
+                by_name: Optional[dict] = None, medical: Optional[dict] = None) -> List[CheckResult]:
     """
     records: dm -> RegistryRecord | None (None = искали и не нашли).
     site_checked: номера, по которым в этом запуске был ответ сайта или свежая отметка «не найден».
@@ -200,6 +201,13 @@ def check_offer(offer: OfferRegistration, records: dict, site_checked: set,
     Возвращает по одному результату на каждый номер DM (или один, если номеров нет).
     """
     if not offer.dm_numbers:
+        word = type_word(offer.lot_title)
+        if medical and word and medical.get(word) is False:
+            # Тип изделия в реестре не регистрируется (DVD-R, конверты): номер DM не нужен, нужен ISO/CE
+            iso = (f"указано: {', '.join(offer.quality_docs)} — проверить срок на дату «evaluare»"
+                   if offer.quality_docs else "ISO/CE в оферте не указаны — запросить")
+            return [CheckResult(offer, None, OK, [
+                f"Не медицинское изделие: в реестре AMDM нет изделий «{word}» — регистрация не требуется; {iso}"])]
         if by_name is not None:
             codes = [c for c in search_codes(offer) if c in by_name]
             found = [r for c in codes for r in by_name[c]]

@@ -271,6 +271,13 @@ class PlaywrightFetcher:
             return []
         return [r for r in (record_from_row(v) for v in self._rows()) if r]
 
+    def search_total(self, field: str, text: str):
+        """(всего записей, записи первой страницы) по вхождению text в колонку field."""
+        records = self.search(field, text)
+        pager = self._signature()[0]
+        m = re.search(r"\((\d+)\s+items?\)", pager or "")
+        return (int(m.group(1)) if m else len(records)), records
+
     def reload(self) -> None:
         """Страница реестра заново (после нескольких сбоев подряд), фильтры пустые."""
         self._page.goto(REGISTRY_URL, wait_until="networkidle", timeout=60000)
