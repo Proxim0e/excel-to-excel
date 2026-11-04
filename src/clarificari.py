@@ -210,7 +210,8 @@ def recheck_result(result_path: Path, tender_dir: Path, clar_dir: Path, round_no
     wb = load_workbook(result_path)
     label = COLUMN_LABEL.format(round_no)
     try:
-        for ws in wb.worksheets:
+        total = len(wb.worksheets)
+        for n, ws in enumerate(wb.worksheets, start=1):
             m = SHEET_RE.fullmatch(ws.title.strip())
             if not m:
                 continue
@@ -264,7 +265,8 @@ def recheck_result(result_path: Path, tender_dir: Path, clar_dir: Path, round_no
                 stats["rechecked"] += 1
                 changed = True
                 found = "подтверждено" if check.status == GREEN else "не подтверждено"
-                logger.info(f"[CLAR] лот {lot}, {participant}: {found} ({len(docs)} документ(ов))")
+                logger.info(f"[CLAR] лот {lot} (лист {n}/{total}, {100 * n / total:.0f}%), {participant}: "
+                            f"{found} ({len(docs)} документ(ов))")
             if changed:
                 _recolor_tab(ws)
         target = out_path or result_path

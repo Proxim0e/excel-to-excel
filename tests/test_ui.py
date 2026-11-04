@@ -41,6 +41,22 @@ class AppTests(unittest.TestCase):
         self.assertEqual(self.app.stage_var.get(), "Этап: Anexa 22")
         self.assertIn("Строк спецификаций", self.app.log_text.get("1.0", "end"))
 
+    def test_live_progress_current_action_and_colors(self):
+        from src.ui.app import log_tag
+        log = logging.getLogger("amdm")
+        log.info("[AMDM] сайт: 23/192 (12%) DM000689873 → найден: PLASTI-MED; ACCESORII")
+        self.app._poll_log()
+        self.assertEqual(self.app.stage_var.get(), "Этап: AMDM")
+        self.assertEqual(self.app.progress["value"], 12.0)
+        self.assertIn("DM000689873 → найден", self.app.now_var.get())
+        logging.getLogger("x").info("[EVAL] лот 5 (12/283, 4%), Electeh SRL: alternativa (авто)")
+        self.app._poll_log()
+        self.assertEqual(self.app.progress["value"], 4.0)
+        self.assertEqual(log_tag("[EVAL] лот 5, X: alternativa (авто)"), "alt")
+        self.assertEqual(log_tag("[AMDM] lot 3, X: DM1 galben — модель не найдена"), "warn")
+        self.assertEqual(log_tag("[AMDM] сайт: 1/2 (50%) DM1 → нет в реестре"), "error")
+        self.assertEqual(log_tag("[AMDM] lot 3, X: DM1 verde"), "ok")
+
     def test_question_appears_and_is_answered(self):
         kb = connect(self.db)
         lot = engine.Lot("T1", 29, "lot 29", "Lot nr. 29 Electrod", "Electrod 5 mm")

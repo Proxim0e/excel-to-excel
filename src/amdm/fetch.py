@@ -120,11 +120,15 @@ class PlaywrightFetcher:
 
     def __enter__(self):
         from playwright.sync_api import sync_playwright
+        started = time.time()
+        logger.info("[AMDM] Запуск браузера…")
         self._pw = sync_playwright().start()
         self._browser = self._pw.chromium.launch(headless=self.headless)
         self._page = self._browser.new_page()
+        logger.info(f"[AMDM] Открываю реестр {REGISTRY_URL} (до 60 с)…")
         self._page.goto(REGISTRY_URL, wait_until="networkidle", timeout=60000)
         self._columns = self._read_headers()
+        logger.info(f"[AMDM] Реестр открыт за {time.time() - started:.0f} с")
         if "dm" not in self._columns:
             raise RuntimeError(f"Не нашёл колонку 'Nr' в заголовках таблицы: {self._columns}. "
                                f"Запусти `python -m src.amdm probe` и пришли файлы из resources/amdm_probe/.")

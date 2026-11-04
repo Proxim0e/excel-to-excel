@@ -48,7 +48,7 @@ def collect_records(cache: RegistryCache, numbers, offline: bool, headless: bool
         else:
             to_fetch.append(dm)
 
-    logger.info(f"Номеров DM: {len(numbers)}; в локальной копии: {len(numbers) - len(to_fetch)}; "
+    logger.info(f"[AMDM] Номеров DM: {len(numbers)}; в локальной копии: {len(numbers) - len(to_fetch)}; "
                 f"искать на сайте: {len(to_fetch)}")
     if to_fetch and not offline:
         from src.amdm.fetch import PlaywrightFetcher
@@ -62,8 +62,9 @@ def collect_records(cache: RegistryCache, numbers, offline: bool, headless: bool
                     else:
                         cache.mark_not_found(dm)
                     records[dm] = rec
-                    if i % 20 == 0 or i == len(to_fetch):
-                        logger.info(f"  сайт: {i}/{len(to_fetch)} ({100 * i / len(to_fetch):.0f}%)")
+                    found = (f"найден: {rec.producer or '—'}; {rec.model or rec.catalog or rec.name or '—'}"
+                             if rec else "нет в реестре")
+                    logger.info(f"[AMDM] сайт: {i}/{len(to_fetch)} ({100 * i / len(to_fetch):.0f}%) {dm} → {found}")
         except ImportError:
             logger.error("Не установлен playwright: pip install playwright && playwright install chromium. "
                          "Продолжаю только по локальной копии.")
@@ -84,6 +85,9 @@ def cmd_check(args) -> int:
         cache.close()
 
     results = [r for o in offers for r in check_offer(o, records, site_checked)]
+    for r in results:
+        why = f" — {'; '.join(r.reasons)[:160]}" if r.status != "verde" and r.reasons else ""
+        logger.info(f"[AMDM] {r.offer.sheet}, {r.offer.supplier}: {r.dm or 'без DM'} {r.status}{why}")
     write_report(wb, results)
     marked = mark_workbook(wb, results)
     logger.info("Листы лотов: строка 4 и цвета - " + ", ".join(f"{k}: {v}" for k, v in sorted(marked.items())))

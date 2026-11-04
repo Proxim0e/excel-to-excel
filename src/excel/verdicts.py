@@ -116,6 +116,7 @@ def write_verdicts(result_path: Path, tender_dir: Path, kb: sqlite3.Connection,
         if tab and not (current is not None and str(current.rgb).upper() in KEEP_TAB_COLORS):
             ws.sheet_properties.tabColor = tab
             stats["tabs"] += 1
+            logger.info(f"[VERDICTS] {ws.title}: вкладка {tab}, участников с решением {len(shown)}")
     out = Path(out_path) if out_path else Path(result_path).with_name(Path(result_path).stem + "_evaluare.xlsx")
     wb.save(out)
     stats["file"] = str(out)

@@ -223,6 +223,15 @@ def save(kb: sqlite3.Connection, ev: Evaluation, lot: Lot) -> Optional[str]:
     return created
 
 
+def describe(ev: Evaluation, asked: Optional[str] = None) -> str:
+    """Строка лога по оферте: итог, кто решил и почему (первые причины)."""
+    how = {cf.PENDING: "вопрос человеку", "auto": "авто", "human": "решение человека"}.get(ev.source, ev.source)
+    if ev.source == cf.PENDING and ev.ask_card:
+        how += " + карточка товара"
+    why = "; ".join(ev.reasons[:2])
+    return f"{ev.status} ({how}){' — ' + why[:180] if why else ''}"
+
+
 def evaluate_tender(result_path: Path, tender_dir: Path, kb: sqlite3.Connection, offline: bool = True,
                     on_lot: Optional[Callable[[Lot, List[Evaluation]], None]] = None) -> List[Evaluation]:
     """Оценка всего тендера; on_lot(lot, решения) - после каждого лота (окно приложения, прогресс)."""
@@ -232,10 +241,12 @@ def evaluate_tender(result_path: Path, tender_dir: Path, kb: sqlite3.Connection,
     manifest = sqlite3.connect(Path(tender_dir) / MANIFEST_NAME)
     evaluations = []
     try:
-        for lot in lots:
+        for i, lot in enumerate(lots, start=1):
             evs = evaluate_lot(lot, manifest, kb, records, site_checked)
             for ev in evs:
-                save(kb, ev, lot)
+                asked = save(kb, ev, lot)
+                logger.info(f"[EVAL] лот {lot.lot_no} ({i}/{len(lots)}, {100 * i / len(lots):.0f}%), "
+                            f"{ev.participant}: {describe(ev, asked)}")
             evaluations.extend(evs)
             if on_lot:
                 on_lot(lot, evs)

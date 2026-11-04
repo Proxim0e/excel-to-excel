@@ -14,6 +14,7 @@ import queue
 import re
 import sys
 import threading
+import time
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
@@ -51,10 +52,27 @@ STAGE_MARKS = [
     (re.compile(r"\[ANEXA22\]"), "Anexa 22"),
     (re.compile(r"\[FILL\]"), "Заполнение"),
     (re.compile(r"\[EVAL\]"), "Оценка"),
-    (re.compile(r"Номеров DM|сайт: \d|Verificare AMDM"), "AMDM"),
-    (re.compile(r"Раунд уточнений|clarific", re.IGNORECASE), "Уточнения"),
+    (re.compile(r"\[AMDM\]|Номеров DM|сайт: \d|Verificare AMDM"), "AMDM"),
+    (re.compile(r"\[CLAR\]|Раунд уточнений|clarific", re.IGNORECASE), "Уточнения"),
 ]
-PROGRESS_RE = re.compile(r"\((\d+(?:\.\d+)?)%\)")
+# «(46.0%)», «(12%)», «(12/283, 4%)» - процент перед закрывающей скобкой
+PROGRESS_RE = re.compile(r"(\d+(?:\.\d+)?)%\)")
+SILENCE_SECONDS = 30   # столько без новых строк - показываем, что ждём (сайт, большой PDF)
+# Подсветка строк лога: тег -> (шаблон, цвет текста)
+LOG_TAGS = [
+    ("error", re.compile(r"ERROR|CRITICAL|ошибк|rosu|nu_corespunde|нет в реестре", re.IGNORECASE), "#C00000"),
+    ("alt", re.compile(r"alternativa", re.IGNORECASE), "#0070C0"),
+    ("warn", re.compile(r"WARNING|galben|вопрос человеку|не подтверждено|clarificare|fara DM", re.IGNORECASE),
+     "#9C6500"),
+    ("ok", re.compile(r"verde|corespunde|подтверждено|найден:|готово", re.IGNORECASE), "#00703C"),
+]
+
+
+def log_tag(line: str) -> Optional[str]:
+    for tag, rx, _ in LOG_TAGS:
+        if rx.search(line):
+            return tag
+    return None
 STATUS_LABELS = {cf.CORESPUNDE: "Corespunde", cf.ALTERNATIVA: "Alternativa", cf.NU_CORESPUNDE: "Nu corespunde",
                  cf.CLARIFICARE: "Clarificare"}
 STATUS_COLORS = {cf.CORESPUNDE: "#00B050", cf.ALTERNATIVA: "#00B0F0", cf.NU_CORESPUNDE: "#FF0000",
@@ -110,6 +128,9 @@ class App:
         self.url_var = tk.StringVar()
         self.stage_var = tk.StringVar(value="Готово к работе")
         self.counts_var = tk.StringVar()
+        self.now_var = tk.StringVar()       # последнее действие текущей задачи
+        self.clock_var = tk.StringVar()     # «идёт 02:13» - задача жива
+        self.task_started = self.last_line_at = 0.0
         self._build()
         self.tender_var.trace_add("write", lambda *_: self._sync_tender())
         self._sync_tender()
@@ -149,13 +170,17 @@ class App:
         self.progress = ttk.Progressbar(status, length=300, mode="determinate")
         self.progress.pack(side="left", padx=10)
         ttk.Label(status, textvariable=self.counts_var).pack(side="left")
+        ttk.Label(status, textvariable=self.clock_var, foreground="#555").pack(side="left", padx=8)
         self.stages = ttk.Label(status, text=" → ".join(STAGES), foreground="#777")
         self.stages.pack(side="right")
+        ttk.Label(self.root, textvariable=self.now_var, foreground="#333", padding=(8, 0)).pack(fill="x")
 
         panes = ttk.Panedwindow(self.root, orient="horizontal")
         panes.pack(fill="both", expand=True, padx=6, pady=6)
         logf = ttk.Labelframe(panes, text="Лог работы")
         self.log_text = tk.Text(logf, wrap="none", font=("Consolas", 9), state="disabled")
+        for tag, _, color in LOG_TAGS:
+            self.log_text.tag_configure(tag, foreground=color)
         sy = ttk.Scrollbar(logf, command=self.log_text.yview)
         self.log_text.configure(yscrollcommand=sy.set)
         sy.pack(side="right", fill="y")
@@ -206,6 +231,9 @@ class App:
             return
         self.stop_flag.clear()
         self.stage_var.set(title)
+        self.progress["value"] = 0
+        self.task_started = self.last_line_at = time.time()
+        self.root.after(1000, self._tick)
 
         def run():
             try:
@@ -216,6 +244,19 @@ class App:
 
         self.worker = threading.Thread(target=run, daemon=True)
         self.worker.start()
+
+    def _tick(self):
+        """Раз в секунду: сколько идёт задача и не молчит ли она - видно, что окно не зависло."""
+        if not (self.worker and self.worker.is_alive()):
+            self.clock_var.set("")
+            return
+        elapsed = int(time.time() - self.task_started)
+        text = f"идёт {elapsed // 60:02d}:{elapsed % 60:02d}"
+        silent = int(time.time() - self.last_line_at)
+        if silent >= SILENCE_SECONDS:
+            text += f" · новых строк нет {silent} с - ждём ответа (сайт, большой документ)"
+        self.clock_var.set(text)
+        self.root.after(1000, self._tick)
 
     def run_tender(self):
         def task():
@@ -334,8 +375,10 @@ class App:
                 break
         if lines:
             self.log_text.configure(state="normal")
+            self.last_line_at = time.time()
+            self.now_var.set("сейчас: " + re.sub(r"^\[[\d:]+\]\s*", "", lines[-1])[:180])
             for line in lines:
-                self.log_text.insert("end", line + "\n")
+                self.log_text.insert("end", line + "\n", log_tag(line) or ())
                 stage = stage_of(line)
                 if stage:
                     self.stage_var.set(f"Этап: {stage}")
