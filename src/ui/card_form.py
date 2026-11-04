@@ -56,7 +56,8 @@ class Tooltip:
 
 class CardForm:
     def __init__(self, parent: ttk.Frame, kb, q: Dict, tender_dir: Optional[Path], on_save: Callable[[Dict], None],
-                 save_text: str = "Подтвердить карточку"):
+                 save_text: str = "Подтвердить карточку", result: Optional[Path] = None):
+        self.result = result          # result-файл текущего тендера - цена оферты участника
         self.parent, self.kb, self.q, self.on_save, self.save_text = parent, kb, q, on_save, save_text
         payload = q.get("payload") or {}
         self.card = dict(payload.get("card") or {"model_key": q["model_key"]})
@@ -112,6 +113,7 @@ class CardForm:
         top.columnconfigure(3, weight=2)
 
         self._build_agents(f)
+        self._build_prices(f)
         self._build_params(f)
         self._build_viewer(f)
 
@@ -142,6 +144,44 @@ class CardForm:
                 self.winner_list.selection_set(i)
         box.columnconfigure(0, weight=3)
         box.columnconfigure(1, weight=2)
+
+    def _build_prices(self, f):
+        """Цены этой модели по годам: текущий тендер и прошлые (принятые - зелёным, отклонённые - красным)."""
+        current = cd.current_offer_price(self.result, self.lot_no, self.participant)
+        self.prices = cd.price_history(self.kb, self.card, self.q.get("tender_id") or "", self.participant, current,
+                                       re.sub(r"^\s*lot\s*nr\.?\s*\d+\s*", "", self.lot_title or "", flags=re.IGNORECASE))
+        summary = cd.price_summary(self.prices)
+        frame = ttk.Labelframe(f, text="Цены по годам (за единицу)" + (": " + " | ".join(summary[:3]) if summary else ""))
+        frame.pack(fill="x", pady=(4, 0))
+        cols = (("year", "Год", 140), ("where", "Тендер, лот", 115), ("title", "Название лота", 260),
+                ("participant", "Участник", 170), ("unit", "Цена за ед.", 85), ("base", "База за ед.", 85),
+                ("qty", "Кол-во", 65), ("ratio", "% базы", 55), ("decision", "Решение", 90))
+        tree = self.price_tree = ttk.Treeview(frame, columns=[c for c, _, _ in cols], show="headings",
+                                              height=min(4, max(1, len(self.prices))))
+        for c, title, width in cols:
+            tree.heading(c, text=title)
+            tree.column(c, width=width, stretch=c == "title",
+                        anchor="w" if c in ("year", "where", "title", "participant", "decision") else "e")
+        tree.tag_configure("won", foreground="#1b5e20")
+        tree.tag_configure("rejected", foreground="#b71c1c")
+        tree.tag_configure("now", background="#e3f2fd")
+        for r in self.prices:
+            where = "этот" if r["period"] == "этот тендер" else f"{r['tender_id']}" + \
+                (f", лот {r['lot_no']}" if r.get("lot_no") else "")
+            tag = "now" if r["period"] == "этот тендер" else ("won" if r["won"] else
+                                                               ("rejected" if r["decision"] == "rejected" else ""))
+            tree.insert("", "end", values=(
+                r["period"] if r["period"] == "этот тендер" or r["period"].isdigit() else r["period"],
+                where, r.get("lot_title") or "", r["participant"], cd.fmt_price(r.get("unit_price")),
+                cd.fmt_price(r.get("base_price")),
+                cd.fmt_price(r.get("quantity")), f"{r['ratio'] * 100:.0f}%" if r.get("ratio") else "",
+                cd.DECISION_LABELS.get(r["decision"], r["decision"] or "")), tags=(tag,))
+        if not self.prices:
+            tree.insert("", "end", values=("", "", "в истории нет оферт этой модели", "", "", "", "", "", ""))
+        sy = ttk.Scrollbar(frame, command=tree.yview)
+        tree.configure(yscrollcommand=sy.set)
+        sy.pack(side="right", fill="y")
+        tree.pack(fill="x")
 
     def _choice_list(self, parent, col: int, title: str, items: List[str]) -> tk.Listbox:
         frame = ttk.Labelframe(parent, text=title)

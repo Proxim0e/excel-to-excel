@@ -151,17 +151,21 @@ def read_legacy_sheet(ws, lot_no: int, suffix: str):
                   if (_clean(ws.cell(row=1, column=c).value) or "").lower().startswith("lot")), None)
     cols = _ofertant_cols(ws)
     first = min(cols)
+    req_col = first - 1 if first > 1 else 1        # требование и база - колонка перед первым участником
     labels = {r: (_clean(ws.cell(row=r, column=1).value) or "").lower() for r in range(4, 9)}
     row_of = lambda word: next((r for r, t in labels.items() if word in t), None)   # noqa: E731
-    r_sum, r_price = row_of("suma"), row_of("pret")
-    # требование: колонка перед первым участником, строки спецификации
-    spec_start = 8 if r_sum else 6
-    req_col = first - 1 if first > 1 else 1
+    r_sum, r_price, r_qty = row_of("suma"), row_of("pret"), row_of("cantit")
+    base = lambda r: _num(ws.cell(row=r, column=req_col).value) if r else None     # noqa: E731
+    if not r_sum and base(5) is not None and base(4) is None:
+        r_sum, r_price, r_qty = 5, 6, 7               # те же строки, но без подписей (2025)
+    elif not r_sum and base(4) is not None:
+        r_sum = 4                                     # 2024: строка 4 - суммы, строка 5 - доля от базы
+    spec_start = 8 if r_sum and r_sum >= 5 else 6
     requirement = "\n".join(x for x in (_clean(ws.cell(row=r, column=req_col).value)
                                         for r in range(spec_start, LEGACY_LAST_ROW)) if x) or None
-    base_value = _num(ws.cell(row=r_sum, column=req_col).value) if r_sum else None
-    lot = dict(lot_no=lot_no, sheet=ws.title, title=title, quantity=None, unit=None,
-               base_price=_num(ws.cell(row=r_price, column=req_col).value) if r_price else None,
+    base_value, quantity = base(r_sum), base(r_qty)
+    base_price = base(r_price) or (base_value / quantity if base_value and quantity else None)
+    lot = dict(lot_no=lot_no, sheet=ws.title, title=title, quantity=quantity, unit=None, base_price=base_price,
                base_value=base_value, requirement=requirement, suffix=suffix, tab_color=tab,
                outcome=lot_outcome(tab, suffix), note=None)
     offers = []
@@ -182,7 +186,7 @@ def read_legacy_sheet(ws, lot_no: int, suffix: str):
         offers.append(Offer(lot_no, ws.title, col, participant, dict(
             producer=p3.get("producer"), country=p3.get("country"), model=p3.get("model"),
             dm=",".join(dms) or None, row4=_clean(ws.cell(row=4, column=col).value),
-            unit_price=_num(ws.cell(row=r_price, column=col).value) if r_price else None, offer_value=value,
+            unit_price=value / quantity if value and quantity else None, offer_value=value,
             price_ratio=(value / base_value) if value and base_value else None, row10=None, previous_winner=0,
             spec=spec_main.strip() or None, spec_notes=("//" + notes).strip() if notes else None,
             row1_text=None, row1_color=None, row11_color=colors[-1] if colors else None,

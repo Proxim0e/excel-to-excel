@@ -159,7 +159,8 @@ def agent_candidates(kb: sqlite3.Connection, card: Dict, tender_id: str, partici
         names[company_key(a["name"])][a["name"]] += 1
     for a in out.values():
         variants = names[company_key(a["name"])]
-        a["name"] = participant if company_key(participant) == company_key(a["name"]) and participant else             max(variants, key=variants.get)
+        a["name"] = participant if participant and company_key(participant) == company_key(a["name"]) else \
+            max(variants, key=variants.get)
     return sorted(out.values(), key=lambda a: (a["name"] != participant, a["period"] != "этот тендер",
                                                -(a["year"] or 0), a["name"]))
 
@@ -179,6 +180,104 @@ def winner_candidates(agents: List[Dict]) -> List[str]:
             if label not in out:
                 out.append(label)
     return out
+
+
+# --- цены по годам -------------------------------------------------------------------------------------------
+DECISION_LABELS = {"accepted": "принят", "rejected": "отклонён", "alternative": "альтернатива",
+                   "clarification": "уточнение", "not_evaluated": "не оценён", "working_group": "раб. группа",
+                   "samples": "образцы", "unknown": "?", "corespunde": "corespunde", "nu_corespunde": "nu corespunde",
+                   "alternativa": "alternativa", "clarificare": "clarificare"}
+
+_RESULT_CACHE: Dict[str, Dict] = {}
+
+
+def current_offer_price(result: Optional[Path], lot_no: Optional[int], participant: str) -> Optional[Dict]:
+    """Цена оферты в текущем тендере из result-файла: A1 количество, D8 база, строка 8 участника - сумма
+    (строка 7 - формула, её значение openpyxl не считает). Книга читается один раз и запоминается."""
+    if not result or not lot_no or not Path(result).is_file():
+        return None
+    key = str(result)
+    if key not in _RESULT_CACHE:
+        from openpyxl import load_workbook
+        sheets = {}
+        try:
+            wb = load_workbook(result, read_only=True, data_only=True)
+            for ws in wb.worksheets:
+                m = re.match(r"\s*lot\s*(\d+)", ws.title, re.IGNORECASE)
+                if m:
+                    sheets[int(m.group(1))] = [list(r) for r in ws.iter_rows(min_row=1, max_row=8, values_only=True)]
+            wb.close()
+        except Exception:  # файл открыт / повреждён - без цены текущего тендера
+            pass
+        _RESULT_CACHE[key] = sheets
+    rows = _RESULT_CACHE[key].get(int(lot_no))
+    if not rows or len(rows) < 8:
+        return None
+
+    def num(v):
+        try:
+            return float(str(v).replace(",", ".")) if v not in (None, "") else None
+        except ValueError:
+            return None
+    qty, base = num(rows[0][0]), num(rows[7][3]) if len(rows[7]) > 3 else None
+    for c, v in enumerate(rows[1]):
+        if isinstance(v, str) and v.lower().startswith("ofertant") and \
+                company_key(v.split(":", 1)[-1]) == company_key(participant):
+            value = num(rows[7][c]) if c < len(rows[7]) else None
+            return {"value": value, "quantity": qty, "unit_price": value / qty if value and qty else None,
+                    "base_price": base / qty if base and qty else None, "ratio": value / base if value and base else None}
+    return None
+
+
+def price_history(kb: sqlite3.Connection, card: Dict, tender_id: str = "", participant: str = "",
+                  current: Optional[Dict] = None, lot_title: str = "") -> List[Dict]:
+    """Все оферты этой модели с ценами: текущий тендер и прошлые, новые - сверху.
+    {year, period, tender_id, lot_no, participant, unit_price, base_price, quantity, value, ratio, decision, won}."""
+    from src.history.tender_year import fallback_year, known_years
+    dms, codes = _dms(card), _codes(card)
+    years = known_years(kb)
+    current_year = years.get(tender_id) or datetime.now().year
+    out: List[Dict] = []
+    if current:
+        out.append({"year": current_year, "period": "этот тендер", "tender_id": tender_id, "lot_no": None,
+                    "participant": participant, "decision": "", "won": False, "lot_title": lot_title, **current})
+    rows = kb.execute("SELECT o.participant, o.tender_id, o.lot_no, o.dm, o.model, o.final_decision, o.unit_price, "
+                      "o.offer_value, o.price_ratio, l.quantity, l.base_price, s.file_mtime, s.source_file, l.title "
+                      "FROM current_offers o JOIN snapshots s ON s.id = o.snapshot_id "
+                      "LEFT JOIN lots l ON l.snapshot_id = o.snapshot_id AND l.sheet = o.sheet").fetchall()
+    for name, tid, lot, dm, model, decision, unit, value, ratio, qty, base_price, mtime, source, title in rows:
+        if not _offer_matches(dm, model, dms, codes):
+            continue
+        year = years.get(tid) or fallback_year(source, mtime)
+        out.append({"year": year, "period": _period(year, tid, tender_id, current_year), "tender_id": tid,
+                    "lot_title": re.sub(r"^\s*lot\s*nr\.?\s*\d+\s*", "", title or "", flags=re.IGNORECASE),
+                    "lot_no": lot, "participant": name, "unit_price": unit, "value": value, "ratio": ratio,
+                    "quantity": qty, "base_price": base_price, "decision": decision, "won": decision == "accepted"})
+    out.sort(key=lambda r: (r["period"] != "этот тендер", -(r["year"] or 0), not r["won"], r["unit_price"] or 0))
+    return out
+
+
+def price_summary(rows: List[Dict]) -> List[str]:
+    """По годам: цена победителя (минимальная из принятых) и разброс всех оферт."""
+    by_year: Dict[int, List[Dict]] = {}
+    for r in rows:
+        if r["period"] != "этот тендер" and r.get("unit_price"):
+            by_year.setdefault(r["year"] or 0, []).append(r)
+    out = []
+    for year in sorted(by_year, reverse=True):
+        prices = [r["unit_price"] for r in by_year[year]]
+        won = [r["unit_price"] for r in by_year[year] if r["won"]]
+        text = f"{year or '?'}: "
+        text += (f"победитель {fmt_price(min(won))}; " if won else "") + \
+            (f"оферты {fmt_price(min(prices))}–{fmt_price(max(prices))}" if len(prices) > 1 else f"оферта {fmt_price(prices[0])}")
+        out.append(text)
+    return out
+
+
+def fmt_price(v: Optional[float]) -> str:
+    if v is None:
+        return ""
+    return f"{v:,.2f}".replace(",", " ").replace(".00", "")
 
 
 # --- технические документы ----------------------------------------------------------------------------------

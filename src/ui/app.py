@@ -874,7 +874,8 @@ class App:
         if self.tabs.select() != str(self.cards_frame):
             return None
         if self.cards_tab is None:
-            self.cards_tab = CardsTab(self.cards_frame, self.kb, self._card_dir, self._cards_changed)
+            self.cards_tab = CardsTab(self.cards_frame, self.kb, self._card_dir, self._cards_changed,
+                                      result_fn=self._card_result)
         else:
             self.cards_tab.reload()
         return self.cards_tab
@@ -895,13 +896,23 @@ class App:
         folder = Path(BASE_DIR) / "downloads" / str(tender_id or "")
         return folder if (folder / "manifest.sqlite").is_file() else None
 
+    def _card_result(self, tender_id: str) -> Optional[Path]:
+        """Result-файл, если он того же тендера, что в «Папке тендера» (цена оферты в текущем тендере)."""
+        result = Path(self.result_var.get() or "")
+        current = Path(self.tender_var.get() or "")
+        if result.is_file() and tender_id and tender_id in current.name:
+            return result
+        return None
+
     def _card_form(self, q: Dict):
         def save(card: Dict):
             answer_card(self.kb, q["id"], card)
             logger.info(f"[UI] Карточка подтверждена: {card['model_key']}"
                         + (f"; агенты: {card['agents']}" if card.get("agents") else ""))
             self._answered()
-        self.card_form = CardForm(self.form, self.kb, q, self._card_dir(q.get("tender_id")), save)
+        self.card_form = CardForm(self.form, self.kb, q, self._card_dir(q.get("tender_id")), save,
+                                  result=self._card_result(q.get("tender_id")))
+
 
 def main(argv=None) -> int:
     argv = list(argv or [])

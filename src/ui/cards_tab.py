@@ -29,8 +29,10 @@ PRODUCT_COLS = ("model_key", "producer", "model", "codes", "dm", "name", "params
 
 
 class CardsTab:
-    def __init__(self, parent, kb, tender_dir_fn: Callable[[str], Optional[Path]], on_change: Callable[[], None]):
+    def __init__(self, parent, kb, tender_dir_fn: Callable[[str], Optional[Path]], on_change: Callable[[], None],
+                 result_fn: Optional[Callable[[str], Optional[Path]]] = None):
         self.parent, self.kb, self.tender_dir_fn, self.on_change = parent, kb, tender_dir_fn, on_change
+        self.result_fn = result_fn or (lambda tender_id: None)
         self.rows: List[Dict] = []
         self.form: Optional[CardForm] = None
         self._build()
@@ -144,7 +146,8 @@ class CardsTab:
                          "lot_title": ctx.get("lot_title", "")}}
         tender_dir = self.tender_dir_fn(ctx["tender_id"]) if ctx["tender_id"] else None
         self.form = CardForm(self.form_frame, self.kb, q, tender_dir, self.save,
-                             save_text="Сохранить карточку" if card.get("source") == "human" else "Подтвердить карточку")
+                             save_text="Сохранить карточку" if card.get("source") == "human" else "Подтвердить карточку",
+                             result=self.result_fn(ctx["tender_id"]) if ctx["tender_id"] else None)
         return self.form
 
     def edit_selected(self):
