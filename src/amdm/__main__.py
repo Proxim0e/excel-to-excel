@@ -63,7 +63,7 @@ def collect_records(cache: RegistryCache, numbers, offline: bool, headless: bool
                         cache.mark_not_found(dm)
                     records[dm] = rec
                     if i % 20 == 0 or i == len(to_fetch):
-                        logger.info(f"  сайт: {i}/{len(to_fetch)}")
+                        logger.info(f"  сайт: {i}/{len(to_fetch)} ({100 * i / len(to_fetch):.0f}%)")
         except ImportError:
             logger.error("Не установлен playwright: pip install playwright && playwright install chromium. "
                          "Продолжаю только по локальной копии.")

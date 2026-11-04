@@ -136,6 +136,7 @@ class App:
         ttk.Button(top, text="…", width=3, command=self.pick_tender).grid(row=2, column=2, sticky="w")
         buttons = ttk.Frame(top)
         buttons.grid(row=0, column=3, rowspan=3, padx=10)
+        ttk.Button(buttons, text="AMDM", command=self.run_amdm).pack(fill="x")
         ttk.Button(buttons, text="Оценка", command=self.run_evaluation).pack(fill="x")
         ttk.Button(buttons, text="Уточнения", command=self.run_clarifications).pack(fill="x")
         ttk.Button(buttons, text="В Excel", command=self.write_excel).pack(fill="x")
@@ -280,6 +281,21 @@ class App:
             finally:
                 kb.close()
         self._start("Запись в Excel", task)
+
+    def run_amdm(self):
+        """Номера DM из result - в реестр AMDM (новые - на сайте) до «Оценки»: оценка сверяет только с
+        локальной копией реестра, и непроверенные номера ушли бы человеку вопросами."""
+        paths = self._paths()
+        if not paths:
+            return
+        result, _ = paths
+
+        def task():
+            import argparse
+            from src.amdm.__main__ import DEFAULT_DB as AMDM_DB, cmd_check
+            cmd_check(argparse.Namespace(workbook=str(result), db=str(AMDM_DB), offline=False,
+                                         show_browser=False, out=None))
+        self._start("AMDM", task)
 
     def run_clarifications(self):
         paths = self._paths()
