@@ -30,6 +30,8 @@
 | Скачивание, классификация, Anexa 22, заполнение | `python src/main.py` (PyCharm; вне его — `PYTHONPATH=.`) | `resources/result_<дата>.xlsx`, `downloads/<тендер>/manifest.sqlite` |
 | Уточнения | `python -m src.clarificari <result.xlsx> downloads/<тендер> --dir downloads/<тендер>/Clarificari --out <копия.xlsx>` | колонки «clarificări (runda N)» |
 | AMDM | `python -m src.amdm check <result.xlsx>` (`--offline` — только локальная копия реестра) | `*_AMDM.xlsx`, лист «Verificare AMDM» |
+| Оценка | `python -m src.evaluate <result.xlsx> downloads/<тендер> [--dry-run] [--online]` | решения и вопросы в `data/knowledge.sqlite` |
+| Окно приложения | `python -m src.ui [<result.xlsx> downloads/<тендер>]` | этап, лог, вопросы и карточки товара |
 | Тесты | `pytest` | |
 
 `downloads/`, `resources/*.xlsx`, `resources/amdm_registry.sqlite`, `data/` — не в git: на другом ПК их нет,
