@@ -148,6 +148,26 @@ def latest_result() -> Optional[Path]:
     return next((f for f in files if not f.name.startswith("~$")), None)
 
 
+def tender_dirs() -> List[Path]:
+    """Скачанные тендеры (downloads/<номер> с manifest.sqlite), последний - первым."""
+    dirs = [d for d in (Path(BASE_DIR) / "downloads").glob("*") if (d / "manifest.sqlite").is_file()]
+    return sorted(dirs, key=lambda d: (d / "manifest.sqlite").stat().st_mtime, reverse=True)
+
+
+def parent_info():
+    """Родительский файл resources/-*.xlsx и ссылка на тендер из него: (Path | None, str | None)."""
+    from src.excel.reader import find_parent_file, get_tender_url_from_parent
+    try:
+        path = find_parent_file()
+    except FileNotFoundError:
+        return None, None
+    try:
+        url = get_tender_url_from_parent()
+    except Exception:  # файл открыт в Excel / повреждён - имя файла всё равно покажем
+        url = None
+    return path, url
+
+
 class App:
     def __init__(self, root: tk.Tk, result: Optional[Path] = None, tender_dir: Optional[Path] = None,
                  db: Path = DEFAULT_DB):
@@ -174,6 +194,8 @@ class App:
         self.now_var = tk.StringVar()       # последнее действие текущей задачи
         self.clock_var = tk.StringVar()     # «идёт 02:13» - задача жива
         self.task_started = self.last_line_at = 0.0
+        self.mode: Optional[str] = None     # как работаем: tender / parent / continue (выбор при запуске)
+        self.start_win: Optional[tk.Toplevel] = None
         self._build()
         self.tender_var.trace_add("write", lambda *_: self._sync_tender())
         self._sync_tender()
@@ -183,6 +205,100 @@ class App:
         self.root.after(200, self._poll_log)
         self.root.after(1000, self._poll_questions)
         self.refresh_questions()
+
+    # --- как будем работать: выбор при запуске окна ---------------------------------------------------------
+    def ask_start(self) -> tk.Toplevel:
+        """Диалог при открытии окна: новый тендер по номеру, родительский файл или продолжить скачанный.
+        Крестик / Esc - просто окно, без запуска."""
+        parent, parent_url = parent_info()
+        dirs = tender_dirs()
+        win = self.start_win = tk.Toplevel(self.root)
+        win.title("Как будем работать?")
+        win.transient(self.root)
+        win.resizable(False, False)
+        body = ttk.Frame(win, padding=12)
+        body.pack(fill="both", expand=True)
+        ttk.Label(body, text="Как будем работать?", font=("Segoe UI", 12, "bold")).pack(anchor="w", pady=(0, 8))
+        mode = self.start_mode = tk.StringVar(value="continue" if dirs else ("parent" if parent else "tender"))
+        self.start_number = tk.StringVar(value=self.url_var.get())
+        self.start_folder = tk.StringVar(value=dirs[0].name if dirs else "")
+
+        ttk.Radiobutton(body, text="Новый тендер - по номеру или ссылке (документы с MTender)",
+                        variable=mode, value="tender").pack(anchor="w")
+        entry = ttk.Entry(body, textvariable=self.start_number, width=60)
+        entry.pack(anchor="w", padx=(24, 0), pady=(2, 8))
+        entry.bind("<FocusIn>", lambda e: mode.set("tender"))
+
+        if parent:
+            text = f"По родительскому файлу: {parent.name}" + (f"\n{parent_url}" if parent_url else "")
+        else:
+            text = "По родительскому файлу: в resources/ нет файла -*.xlsx"
+        rb = ttk.Radiobutton(body, text=text, variable=mode, value="parent")
+        rb.pack(anchor="w", pady=(0, 8))
+        if not parent:
+            rb.state(["disabled"])
+
+        rb = ttk.Radiobutton(body, text="Продолжить скачанный тендер (AMDM, Оценка, Уточнения):",
+                             variable=mode, value="continue")
+        rb.pack(anchor="w")
+        combo = ttk.Combobox(body, textvariable=self.start_folder, values=[d.name for d in dirs],
+                             state="readonly", width=20)
+        combo.pack(anchor="w", padx=(24, 0), pady=(2, 8))
+        combo.bind("<<ComboboxSelected>>", lambda e: mode.set("continue"))
+        if not dirs:
+            rb.state(["disabled"])
+            combo.state(["disabled"])
+
+        buttons = ttk.Frame(body)
+        buttons.pack(fill="x", pady=(6, 0))
+        ttk.Button(buttons, text="Начать", command=lambda: self.apply_start(mode.get(), run=True)).pack(side="right")
+        ttk.Button(buttons, text="Только открыть окно",
+                   command=lambda: self.apply_start(mode.get(), run=False)).pack(side="right", padx=6)
+        win.protocol("WM_DELETE_WINDOW", lambda: self.apply_start("none"))
+        win.bind("<Return>", lambda e: self.apply_start(mode.get(), run=True))
+        win.bind("<Escape>", lambda e: self.apply_start("none"))
+        win.update_idletasks()
+        x = self.root.winfo_rootx() + max(0, (self.root.winfo_width() - win.winfo_reqwidth()) // 2)
+        win.geometry(f"+{x}+{self.root.winfo_rooty() + 120}")
+        try:
+            win.grab_set()
+        except tk.TclError:   # окно ещё не показано (тесты) - без модальности
+            pass
+        return win
+
+    def apply_start(self, mode: str, run: bool = False) -> bool:
+        """Выбор из ask_start: заполнить поля окна и (run) запустить тендер. False - выбор неполный,
+        диалог остаётся открытым."""
+        if mode == "tender":
+            number = self.start_number.get().strip()
+            if not number:
+                messagebox.showwarning("Номер тендера", "Введите номер или ссылку тендера.", parent=self.start_win)
+                return False
+            self.url_var.set(number)
+        elif mode == "parent":
+            self.url_var.set("")
+        elif mode == "continue":
+            folder = Path(BASE_DIR) / "downloads" / self.start_folder.get()
+            if not (folder / "manifest.sqlite").is_file():
+                return False
+            self.tender_var.set(str(folder))
+            result = latest_result()
+            if result:
+                self.result_var.set(str(result))
+        self.mode = mode if mode != "none" else None
+        if self.start_win is not None:
+            self.start_win.grab_release()
+            self.start_win.destroy()
+            self.start_win = None
+        if mode == "tender":
+            self.stage_var.set(f"Новый тендер: {self.url_var.get()}")
+        elif mode == "parent":
+            self.stage_var.set("Тендер по родительскому файлу")
+        elif mode == "continue":
+            self.stage_var.set(f"Тендер {Path(self.tender_var.get()).name}: дальше - AMDM, Оценка, Уточнения")
+        if run and mode in ("tender", "parent"):
+            self.run_tender()
+        return True
 
     # --- разметка ------------------------------------------------------------------------------------------
     def _build(self):
@@ -385,6 +501,16 @@ class App:
     def run_tender(self):
         """Скачивание и разбор тендера: src/main.py --console [--tender <номер|URL>] отдельным процессом."""
         tender = self.url_var.get().strip()
+        if not tender and self.mode != "parent":         # пустое поле - не запускать молча по родительскому
+            parent, url = parent_info()
+            if not parent:
+                messagebox.showwarning("Тендер", "Введите номер или ссылку тендера "
+                                                 "(родительского файла resources/-*.xlsx нет).")
+                return
+            if not messagebox.askyesno("Тендер", f"Номер тендера не указан. Запустить по родительскому файлу "
+                                                 f"{parent.name}?" + (f"\n{url}" if url else "")):
+                return
+            self.mode = "parent"
         args = [str(Path(BASE_DIR) / "src" / "main.py"), "--console"] + (["--tender", tender] if tender else [])
         m = re.search(r"tender/(\d+)", tender) or re.fullmatch(r"\s*(\d+)\s*", tender)
 
@@ -763,6 +889,8 @@ def main(argv=None) -> int:
     result = Path(argv[0]) if len(argv) > 0 else None
     tender = Path(argv[1]) if len(argv) > 1 else None
     root = new_root()
-    App(root, result, tender)
+    app = App(root, result, tender)
+    if not tender:                                   # окно открыто без тендера - спросить, как работаем
+        root.after(300, app.ask_start)
     root.mainloop()
     return 0

@@ -6,6 +6,7 @@ from pathlib import Path
 
 try:
     import tkinter as tk
+    from tkinter import ttk
     from src.ui.app import ensure_tcl
     ensure_tcl()
     tk.Tk().destroy()
@@ -81,6 +82,44 @@ class AppTests(unittest.TestCase):
         self.assertEqual(self.app.progress["value"], 100)
         self.assertIn("✓AMDM", self.app.stages.cget("text"))
         self.assertIn("готово", self.app.stage_var.get())
+
+    def test_start_dialog_asks_how_we_work(self):
+        from unittest import mock
+        from src.ui import app as ui
+        parent = Path(self.tmp.name) / "-21643233.xlsx"
+        with mock.patch.object(ui, "parent_info", return_value=(parent, "https://achizitii.md/ro/public/tender/21643233/")), \
+                mock.patch.object(ui, "tender_dirs", return_value=[]), \
+                mock.patch.object(ui.App, "run_tender") as run:
+            win = self.app.ask_start()
+            self.assertEqual(win.title(), "Как будем работать?")
+            self.assertEqual(self.app.start_mode.get(), "parent")         # нет скачанных - родительский файл
+            texts = [w.cget("text") for w in win.winfo_children()[0].winfo_children()
+                     if isinstance(w, ttk.Radiobutton)]
+            self.assertIn("-21643233.xlsx", texts[1])
+            # новый тендер без номера - диалог не закрывается
+            with mock.patch.object(ui.messagebox, "showwarning") as warn:
+                self.assertFalse(self.app.apply_start("tender", run=True))
+            warn.assert_called_once()
+            self.app.start_number.set("21641880")
+            self.assertTrue(self.app.apply_start("tender", run=True))
+            run.assert_called_once()
+            self.assertEqual((self.app.mode, self.app.url_var.get()), ("tender", "21641880"))
+            self.assertIsNone(self.app.start_win)
+
+    def test_empty_tender_field_asks_before_parent_file(self):
+        from unittest import mock
+        from src.ui import app as ui
+        parent = Path(self.tmp.name) / "-21643233.xlsx"
+        with mock.patch.object(ui, "parent_info", return_value=(parent, None)), \
+                mock.patch.object(ui.messagebox, "askyesno", return_value=False) as ask, \
+                mock.patch.object(ui.App, "_start_process") as start:
+            self.app.run_tender()
+            self.assertIn("-21643233.xlsx", ask.call_args[0][1])
+            start.assert_not_called()                                      # «нет» - ничего не запущено
+            ask.return_value = True
+            self.app.run_tender()
+            self.assertNotIn("--tender", start.call_args[0][1])            # «да» - по родительскому файлу
+            self.assertEqual(self.app.mode, "parent")
 
     def test_medical_type_question_in_window(self):
         from src.evaluate.answers import ask_medical_type, human_types

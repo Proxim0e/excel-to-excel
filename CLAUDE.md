@@ -27,7 +27,7 @@
 
 | Шаг | Команда | Результат |
 |---|---|---|
-| Окно приложения (всё ниже — кнопками) | `python src/main.py` без параметров (или `python -m src.ui`) | этапы, прогресс, лог, вопросы; «Настройки» — `data/settings.json` поверх `src/config.py` |
+| Окно приложения (всё ниже — кнопками) | `python src/main.py` без параметров (или `python -m src.ui`) | при запуске — «Как будем работать?» (новый тендер / родительский файл / скачанный); этапы, прогресс, лог, вопросы; «Настройки» — `data/settings.json` поверх `src/config.py` |
 | Скачивание, классификация, Anexa 22, заполнение | `python src/main.py --tender <номер>` (без окна; `--console` — по родительскому файлу) | `resources/result_<дата>.xlsx`, `downloads/<тендер>/manifest.sqlite` |
 | Уточнения | `python -m src.clarificari <result.xlsx> downloads/<тендер> --dir downloads/<тендер>/Clarificari --out <копия.xlsx>` | колонки «clarificări (runda N)» |
 | AMDM | `python -m src.amdm check <result.xlsx>` (`--offline` — только локальная копия реестра) | `*_AMDM.xlsx`, лист «Verificare AMDM» |
