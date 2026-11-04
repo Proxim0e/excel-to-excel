@@ -122,11 +122,23 @@ def collect_by_name(cache: RegistryCache, codes, offline: bool, headless: bool) 
     return found
 
 
-def collect_types(cache: RegistryCache, titles, offline: bool, headless: bool) -> dict:
-    """Оферты без номера DM: тип изделия (первое слово названия лота) -> медицинский ли он по реестру
-    (True / False; None - неизвестно: offline и раньше не проверяли). Ответ хранится в копии реестра 30 дней."""
-    from src.amdm.medical import is_medical_type, registry_query, type_variants, type_word
-    words = sorted({w for w in (type_word(t) for t in titles) if w})
+def collect_types(cache: RegistryCache, offers, offline: bool, headless: bool, kb=None) -> dict:
+    """Оферты без номера DM (OfferRegistration): тип изделия (первое слово названия лота) -> медицинский ли он
+    (True / False по реестру; HUMAN_YES / HUMAN_NO - решение человека; None - неизвестно). Ответ реестра хранится
+    в его копии 30 дней. kb - база знаний: решения человека берутся из неё, а на неясный тип ставится вопрос
+    в окне («медицинское ли изделие?»)."""
+    from src.amdm.medical import HUMAN_NO, HUMAN_YES, is_medical_type, registry_query, type_variants, type_word
+    offers = list(offers)
+    by_word = {}
+    for o in offers:
+        w = type_word(o.lot_title)
+        if w:
+            by_word.setdefault(w, []).append(o)
+    words = sorted(by_word)
+    human = {}
+    if kb is not None:
+        from src.evaluate.answers import human_types
+        human = human_types(kb)
     variants = {w: type_variants(w) for w in words}
     known = {v: cache.get_type(v) for vs in variants.values() for v in vs}
     to_check = [v for v in known if not cache.type_checked(v)]
@@ -152,10 +164,28 @@ def collect_types(cache: RegistryCache, titles, offline: bool, headless: bool) -
             logger.error("Не установлен playwright: проверка типа изделия пропущена.")
         except Exception as e:
             logger.error(f"Проверка типа изделия прервана: {e}. Найденное сохранено.")
-    result = {}
+    result, asked = {}, 0
     for w, vs in variants.items():
+        if w in human:
+            result[w] = HUMAN_YES if human[w] else HUMAN_NO
+            continue
         flags = [known.get(v) for v in vs]
         result[w] = True if any(f is True for f in flags) else (False if all(f is False for f in flags) else None)
+        if result[w] is None and kb is not None and not offline:
+            from src.evaluate.answers import ask_medical_type
+            registry = [{"query": registry_query(v), "total": (cache.db.execute(
+                "SELECT total FROM amdm_type WHERE word = ?", (v,)).fetchone() or [None])[0]} for v in vs]
+            examples = [{"sheet": o.sheet, "participant": o.supplier, "lot_title": o.lot_title, "model": o.model,
+                         "quality_docs": o.quality_docs} for o in by_word[w][:8]]
+            if ask_medical_type(kb, w, {"word": w, "registry": registry, "offers": examples,
+                                        "offers_total": len(by_word[w])}):
+                asked += 1
+                logger.info(f"[AMDM] тип «{w}»: реестр не дал ответа - вопрос в окне «медицинское ли изделие?»")
+    if human:
+        used = [w for w in words if w in human]
+        if used:
+            logger.info(f"[AMDM] Типы по решению человека: " + ", ".join(
+                f"{w} - {'медицинский' if human[w] else 'не медицинский'}" for w in used))
     return result
 
 
@@ -169,8 +199,13 @@ def cmd_check(args) -> int:
         records, site_checked = collect_records(cache, numbers, args.offline, not args.show_browser)
         codes = [c for o in offers if not o.dm_numbers for c in search_codes(o)]
         by_name = collect_by_name(cache, codes, args.offline, not args.show_browser)
-        medical = collect_types(cache, [o.lot_title for o in offers if not o.dm_numbers], args.offline,
-                                not args.show_browser)
+        from src.history.db import connect as connect_kb
+        kb = connect_kb()
+        try:
+            medical = collect_types(cache, [o for o in offers if not o.dm_numbers], args.offline,
+                                    not args.show_browser, kb)
+        finally:
+            kb.close()
     finally:
         cache.close()
 

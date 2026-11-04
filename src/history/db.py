@@ -168,7 +168,7 @@ CREATE INDEX IF NOT EXISTS idx_evaluations_model ON evaluations(model_key, statu
 -- Очередь вопросов к человеку для окна приложения
 CREATE TABLE IF NOT EXISTS questions (
     id          INTEGER PRIMARY KEY,
-    kind        TEXT NOT NULL,          -- offer_status / product_card
+    kind        TEXT NOT NULL,          -- offer_status / product_card / medical_type
     tender_id   TEXT NOT NULL,
     lot_no      INTEGER,
     participant TEXT,
@@ -179,6 +179,15 @@ CREATE TABLE IF NOT EXISTS questions (
     created_at  TEXT NOT NULL,
     answered_at TEXT,
     UNIQUE (kind, tender_id, lot_no, participant, model_key)
+);
+
+-- Медицинское ли изделие такого типа (первое слово названия лота) - ответ человека, когда реестр не решил.
+-- Не медицинское: регистрация AMDM не требуется, достаточно ISO/CE. Действует для всех тендеров.
+CREATE TABLE IF NOT EXISTS product_types (
+    word        TEXT PRIMARY KEY,
+    medical     INTEGER NOT NULL,
+    comment     TEXT,
+    decided_at  TEXT NOT NULL
 );
 """
 

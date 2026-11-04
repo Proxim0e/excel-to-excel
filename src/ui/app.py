@@ -23,7 +23,7 @@ from typing import Dict, List, Optional
 from src import config as app_config
 from src.config import BASE_DIR, RESOURCE_DIR
 from src.evaluate import confidence as cf
-from src.evaluate.answers import answer_card, answer_offer, open_questions
+from src.evaluate.answers import answer_card, answer_medical, answer_offer, open_questions
 from src.evaluate.cards import CARD_FIELDS
 from src.history.db import DEFAULT_DB, connect
 from src.history.review import REASONS
@@ -202,8 +202,8 @@ class App:
         self.progress.pack(side="left", padx=10)
         ttk.Label(status, textvariable=self.counts_var).pack(side="left")
         ttk.Label(status, textvariable=self.clock_var, foreground="#555").pack(side="left", padx=8)
-        self.stages = ttk.Label(status, text=" → ".join(STAGES), foreground="#777")
-        self.stages.pack(side="right")
+        self.stages = ttk.Label(self.root, text=" → ".join(STAGES), foreground="#777", padding=(8, 0))
+        self.stages.pack(fill="x")
         ttk.Label(self.root, textvariable=self.now_var, foreground="#333", padding=(8, 0)).pack(fill="x")
 
         panes = ttk.Panedwindow(self.root, orient="horizontal")
@@ -222,8 +222,8 @@ class App:
 
         qf = self.qf = ttk.Labelframe(panes, text="Вопросы к человеку")
         panes.add(qf, weight=2)
-        self.root.after(100, lambda: panes.sashpos(0, int(self.root.winfo_width() * 0.6)))
-        self.q_list = tk.Listbox(qf, width=42, exportselection=False)
+        self.root.after(100, lambda: panes.sashpos(0, int(self.root.winfo_width() * 0.45)))
+        self.q_list = tk.Listbox(qf, width=30, exportselection=False)
         self.q_list.pack(side="left", fill="y")
         self.q_list.bind("<<ListboxSelect>>", lambda e: self.show_selected())
         self.form = ttk.Frame(qf, padding=6)
@@ -588,6 +588,8 @@ class App:
         for i, q in enumerate(self.questions):
             if q["kind"] == "product_card":
                 text = f"Карточка: {q['model_key']}"
+            elif q["kind"] == "medical_type":
+                text = f"Мед. изделие? «{q['model_key']}»"
             else:
                 text = f"Лот {q['lot_no']}: {q['participant']}"
             self.q_list.insert("end", text)
@@ -619,6 +621,8 @@ class App:
             w.destroy()
         if self.current["kind"] == "product_card":
             self._card_form(self.current)
+        elif self.current["kind"] == "medical_type":
+            self._medical_form(self.current)
         else:
             self._offer_form(self.current)
 
@@ -671,6 +675,39 @@ class App:
             self.current = None
             self.refresh_questions()
         ttk.Button(self.form, text="Сохранить решение", command=save).pack(anchor="e", pady=6)
+
+    def _medical_form(self, q: Dict):
+        """Реестр AMDM не ответил, регистрируются ли изделия этого типа: решает человек, один раз для всех тендеров."""
+        p, word = q["payload"], q["model_key"]
+        ttk.Label(self.form, text=f"Медицинское ли изделие «{word}»?", font=("Segoe UI", 11, "bold")).pack(anchor="w")
+        ttk.Label(self.form, wraplength=540, justify="left", text=(
+            "У этих оферт нет номера DM. Тип изделия - первое слово названия лота. Если такие изделия не "
+            "медицинские (бумага для принтера, DVD, конверты), регистрация AMDM не нужна - достаточно ISO/CE. "
+            "Если медицинские - без номера DM оферта остаётся жёлтой (поиск в реестре по коду модели).")
+                  ).pack(anchor="w", pady=(0, 6))
+        registry = "; ".join(f"запрос «{r['query']}» - записей: {r['total'] if r['total'] is not None else '?'}"
+                             for r in p.get("registry", []))
+        self._text(self.form, "Реестр AMDM", (registry or "не проверялся") + "\nНоль записей при запросе без "
+                   "диакритики ничего не доказывает: в реестре слово может быть написано с ней.", 3)
+        offers = "\n".join(f"{o['sheet']}, {o['participant']}: {o['model'] or '—'}"
+                            f"{' (' + ', '.join(o['quality_docs']) + ')' if o.get('quality_docs') else ''}"
+                            f"\n    {o['lot_title']}" for o in p.get("offers", []))
+        more = p.get("offers_total", 0) - len(p.get("offers", []))
+        self._text(self.form, f"Оферты ({p.get('offers_total', 0)})", offers + (f"\n… и ещё {more}" if more > 0 else ""), 8)
+        comment = tk.StringVar()
+        ttk.Label(self.form, text="Комментарий:").pack(anchor="w")
+        ttk.Entry(self.form, textvariable=comment, width=80).pack(anchor="w")
+
+        def save(medical: bool):
+            answer_medical(self.kb, q["id"], medical, comment.get())
+            logger.info(f"[UI] Тип «{word}»: {'медицинское' if medical else 'не медицинское'} изделие - "
+                        f"применится при следующей проверке AMDM / оценке")
+            self.current = None
+            self.refresh_questions()
+        row = ttk.Frame(self.form)
+        row.pack(anchor="w", pady=6)
+        ttk.Button(row, text="Медицинское - нужна регистрация AMDM", command=lambda: save(True)).pack(fill="x", pady=2)
+        ttk.Button(row, text="Не медицинское - достаточно ISO/CE", command=lambda: save(False)).pack(fill="x", pady=2)
 
     def _card_form(self, q: Dict):
         card = dict(q["payload"].get("card") or {"model_key": q["model_key"]})

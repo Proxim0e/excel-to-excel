@@ -81,6 +81,23 @@ class AppTests(unittest.TestCase):
         self.assertIn("✓AMDM", self.app.stages.cget("text"))
         self.assertIn("готово", self.app.stage_var.get())
 
+    def test_medical_type_question_in_window(self):
+        from src.evaluate.answers import ask_medical_type, human_types
+        kb = connect(self.db)
+        ask_medical_type(kb, "DVD-R", {"word": "DVD-R", "registry": [{"query": "DVD-R", "total": 0}],
+                                       "offers": [{"sheet": "lot 234", "participant": "Ecochimie", "model": "DVD-R 4.7",
+                                                   "lot_title": "Lot nr. 234 DVD-R+plicuri", "quality_docs": ["ISO"]}],
+                                       "offers_total": 1})
+        kb.close()
+        self.assertEqual(self.app.refresh_questions(), 1)
+        self.assertEqual(self.app.q_list.get(0), "Мед. изделие? «DVD-R»")
+        self.app.show_selected()
+        rows = [w for w in self.app.form.winfo_children() if isinstance(w, tk.ttk.Frame)]
+        no = [b for b in rows[-1].winfo_children() if "Не медицинское" in b.cget("text")][0]
+        no.invoke()
+        self.assertEqual(human_types(self.app.kb), {"DVD-R": False})
+        self.assertEqual(self.app.questions, [])
+
     def test_question_appears_and_is_answered(self):
         kb = connect(self.db)
         lot = engine.Lot("T1", 29, "lot 29", "Lot nr. 29 Electrod", "Electrod 5 mm")

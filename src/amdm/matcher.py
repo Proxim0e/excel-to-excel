@@ -16,7 +16,7 @@ from typing import List, Optional, Tuple
 
 from src.amdm.models import (OfferRegistration, RegistryRecord, CheckResult,
                              OK, CHECK, FAIL, NO_DM, IN_PROGRESS)
-from src.amdm.medical import type_word
+from src.amdm.medical import HUMAN_NO, not_medical, type_word
 from src.amdm.parse import fold, compact, model_tokens
 
 LEGAL_FORMS = re.compile(
@@ -202,12 +202,15 @@ def check_offer(offer: OfferRegistration, records: dict, site_checked: set,
     """
     if not offer.dm_numbers:
         word = type_word(offer.lot_title)
-        if medical and word and medical.get(word) is False:
+        kind = medical.get(word) if medical and word else None
+        if not_medical(kind):
             # Тип изделия в реестре не регистрируется (DVD-R, конверты): номер DM не нужен, нужен ISO/CE
             iso = (f"указано: {', '.join(offer.quality_docs)} — проверить срок на дату «evaluare»"
                    if offer.quality_docs else "ISO/CE в оферте не указаны — запросить")
             return [CheckResult(offer, None, OK, [
-                f"Не медицинское изделие: в реестре AMDM нет изделий «{word}» — регистрация не требуется; {iso}"])]
+                f"Не медицинское изделие: "
+                + (f"«{word}» - решение человека" if kind == HUMAN_NO else f"в реестре AMDM нет изделий «{word}»")
+                + f" — регистрация не требуется; {iso}"])]
         if by_name is not None:
             codes = [c for c in search_codes(offer) if c in by_name]
             found = [r for c in codes for r in by_name[c]]

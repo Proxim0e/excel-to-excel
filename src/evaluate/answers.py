@@ -4,6 +4,8 @@
 offer_status  - решение по оферте: evaluations.source = human (движок его больше не пересчитывает);
 product_card  - карточка товара подтверждена (products.source = human): дальше эта модель может
                 получать автоматическое решение при полной уверенности.
+medical_type  - медицинское ли изделие этого типа (product_types): реестр AMDM не дал ответа; решение
+                действует для всех тендеров, проверка AMDM и оценка берут его вместо реестра.
 """
 import json
 import sqlite3
@@ -46,6 +48,29 @@ def answer_offer(kb: sqlite3.Connection, question_id: int, status: str, reason: 
 def answer_card(kb: sqlite3.Connection, question_id: int, card: Dict) -> None:
     save_card(kb, card, source="human")
     _close(kb, question_id, {"card": card})
+
+
+def human_types(kb: sqlite3.Connection) -> Dict[str, bool]:
+    """Решения человека: тип изделия -> медицинский ли."""
+    return {w: bool(m) for w, m in kb.execute("SELECT word, medical FROM product_types")}
+
+
+def ask_medical_type(kb: sqlite3.Connection, word: str, payload: Dict) -> bool:
+    """Вопрос «медицинское ли изделие «word»?» (один на тип, для всех тендеров). True - создан новый."""
+    cur = kb.execute("INSERT OR IGNORE INTO questions (kind, tender_id, lot_no, participant, model_key, payload, "
+                     "state, created_at) VALUES ('medical_type', '', 0, '', ?, ?, 'open', ?)",
+                     (word, json.dumps(payload, ensure_ascii=False, default=str), _now()))
+    kb.commit()
+    return bool(cur.rowcount)
+
+
+def answer_medical(kb: sqlite3.Connection, question_id: int, medical: bool, comment: str = "") -> None:
+    q = kb.execute("SELECT model_key FROM questions WHERE id = ? AND kind = 'medical_type'", (question_id,)).fetchone()
+    if not q:
+        raise KeyError(question_id)
+    kb.execute("INSERT OR REPLACE INTO product_types (word, medical, comment, decided_at) VALUES (?, ?, ?, ?)",
+               (q[0], int(medical), comment, _now()))
+    _close(kb, question_id, {"medical": medical, "comment": comment})
 
 
 def _close(kb: sqlite3.Connection, question_id: int, answer: Dict) -> None:

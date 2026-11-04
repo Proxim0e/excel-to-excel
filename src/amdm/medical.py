@@ -16,6 +16,15 @@ from typing import Iterable, List, Optional
 
 from src.amdm.parse import fold
 
+# Решение человека (окно, вопрос «медицинское ли изделие») - сильнее ответа реестра
+HUMAN_NO, HUMAN_YES = "human:no", "human:yes"
+
+
+def not_medical(value) -> bool:
+    """Значение из collect_types: тип не медицинский (по реестру или по решению человека)."""
+    return value is False or value == HUMAN_NO
+
+
 PAGE = 10   # строк на странице реестра: больше - видим не все, считаем тип медицинским
 # Первые слова, по которым тип не определить
 GENERIC = {"set", "kit", "lot", "lotul", "piese", "accesorii", "consumabile", "material", "materiale", "dispozitiv",
