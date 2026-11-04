@@ -14,8 +14,8 @@ from src.history.db import connect
 
 def evaluate_one(kb, participant="Electeh SRL"):
     lot = engine.Lot("T1", 29, "lot 29", "Lot nr. 29 Electrod", "Electrod 5 mm")
-    ev = engine.Evaluation("T1", 29, participant, "DM:DM1", cf.CLARIFICARE, cf.PENDING, 0.3, ["x"],
-                           findings={"card_prefill": {"model_key": "DM:DM1", "producer": "Fiab", "dm": "DM1"}},
+    ev = engine.Evaluation("T1", 29, participant, "P:fiab|f4141", cf.CLARIFICARE, cf.PENDING, 0.3, ["x"],
+                           findings={"card_prefill": {"model_key": "P:fiab|f4141", "producer": "Fiab", "dm": "DM1"}},
                            ask_card=True)
     engine.save(kb, ev, lot)
     kb.commit()
@@ -39,7 +39,7 @@ class SyncTests(unittest.TestCase):
 
     def answer_all(self, kb):
         qs = {q["kind"]: q for q in open_questions(kb)}
-        answer_card(kb, qs["product_card"]["id"], {"model_key": "DM:DM1", "producer": "FIAB SpA", "model": "F4141",
+        answer_card(kb, qs["product_card"]["id"], {"model_key": qs["product_card"]["model_key"], "producer": "FIAB SpA", "model": "F4141",
                                                    "dm": "DM1", "params": {"Diametru": "5 mm"}})
         answer_offer(kb, qs["offer_status"]["id"], "corespunde", comment="проверено по каталогу")
         answer_medical(kb, qs["medical_type"]["id"], False, "шапочки")

@@ -21,9 +21,9 @@ from src.anexa22.evidence import check_offer
 from src import config as app_config
 from src.evaluate import confidence as cf
 from src.evaluate.cards import prefill, save_card
-from src.evaluate.history import HistoryInfo, lookup
+from src.evaluate.history import HistoryInfo, lookup, resolve_key
 from src.excel.fill_offers import FIRST_PARTICIPANT_COL, ROW_NAME, ROW_SPEC, ROW_VALUE, load_offers
-from src.history.cards import model_key as make_model_key
+from src.history.cards import card_key, size_of
 from src.manifest import MANIFEST_NAME
 
 logger = logging.getLogger(__name__)
@@ -108,17 +108,23 @@ def read_lots(result_path: Path, tender_dir: Path) -> List[Lot]:
     return lots
 
 
-def offer_model_key(offer: Optional[dict]) -> Optional[str]:
+def offer_model_key(offer: Optional[dict], title: str = "", kb: Optional[sqlite3.Connection] = None,
+                    extra_dms: Optional[List[str]] = None) -> Optional[str]:
+    """Ключ карточки товара: производитель + модель + типоразмер из названия лота (или изделия оферты).
+    С базой знаний - ключ уже существующей карточки, найденной по любому из её DM."""
     if not offer:
         return None
-    dms = ",".join(d for value in offer["dm"] for d in value.split(",") if d)
-    return make_model_key("; ".join(offer["producer"]), "; ".join(offer["model"]), dms)
+    dms = [d.strip() for value in offer["dm"] for d in value.split(",") if d.strip()]
+    dms += [d for d in extra_dms or [] if d not in dms]
+    size_text = title if size_of(title) else " ".join(offer.get("item_name", []))
+    key = card_key("; ".join(offer["producer"]), "; ".join(offer["model"]), ",".join(dms), size_text)
+    return resolve_key(kb, key, dms, size_of(size_text)) if kb is not None else key
 
 
 def evaluate_participant(lot: Lot, p: Participant, manifest: sqlite3.Connection, kb: sqlite3.Connection,
                          amdm_records: dict, site_checked: set, by_name: Optional[dict] = None,
                          medical: Optional[dict] = None) -> Evaluation:
-    key = offer_model_key(p.offer)
+    key = offer_model_key(p.offer, lot.title, kb, p.registration.dm_numbers if p.registration else None)
 
     def result(status, source, conf, reasons, code=None, findings=None, ask_card=False):
         return Evaluation(lot.tender_id, lot.lot_no, p.name, key, status, source, conf, reasons, code,

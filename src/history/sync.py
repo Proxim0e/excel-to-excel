@@ -171,8 +171,12 @@ def apply(kb: sqlite3.Connection, records: Iterable[Dict]) -> Dict[str, int]:
 
 
 def sync(kb: sqlite3.Connection, folder: Path = ANSWERS_DIR) -> Dict[str, int]:
-    """Загрузить ответы всех ПК, затем выгрузить свои (с учётом загруженных)."""
+    """Загрузить ответы всех ПК, затем выгрузить свои (с учётом загруженных). Перед этим старые ключи
+    карточек переводятся на «производитель + модель + размер» (src/history/rekey.py)."""
+    from src.history.rekey import migrate
+    migrate(kb)
     stats = apply(kb, read_all(folder))
+    migrate(kb)                      # карточки с другого ПК на старом ключе
     stats["exported"] = export(kb, own_file(folder))
     changed = stats["product"] + stats["offer"] + stats["type"]
     if changed:

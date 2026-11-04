@@ -41,6 +41,72 @@ def model_key(producer: Optional[str], model: Optional[str], dm: Optional[str]) 
     return f"M:{norm_company(producer) or '?'}|{body}"
 
 
+NUM = r"\d+(?:[.,]\d+)?"
+DIMS_RE = re.compile(rf"({NUM})\s*(?:mm|cm|m)?\s*[x×хХX*]\s*({NUM})(?:\s*(?:mm|cm|m)?\s*[x×хХX*]\s*({NUM}))?")
+UNIT_RE = re.compile(rf"({NUM})\s*(ml|mm|cm|fr|ch|mcm|µm|um|g|l)(?![\w])", re.IGNORECASE)
+GAUGE_RE = re.compile(r"(?<![\w.,])(\d{1,2})\s*G(?![\w])")
+
+
+def size_of(text: Optional[str]) -> str:
+    """Типоразмер из названия лота / изделия: «Film radiologic 35 x 43 cm» -> «35x43», «Ac 18G x 90 mm» ->
+    «18g 90mm», «Seringa 5 ml» -> «5ml». Нет размера - пустая строка."""
+    text = (text or "").replace(",", ".")
+    m = DIMS_RE.search(text)
+    if m:
+        return "x".join(g.rstrip("0").rstrip(".") if "." in g else g for g in m.groups() if g)
+    parts = [f"{g}g" for g in GAUGE_RE.findall(text)]
+    for value, unit in UNIT_RE.findall(text):
+        value = value.rstrip("0").rstrip(".") if "." in value else value
+        parts.append(f"{value}{unit.lower().replace('µm', 'mcm').replace('um', 'mcm')}")
+    return " ".join(dict.fromkeys(parts[:3]))
+
+
+def product_key(producer: Optional[str], model: Optional[str], size: str = "") -> Optional[str]:
+    """Ключ карточки: производитель + коды модели + типоразмер («P:agfa|dt2b|35x43»). DM в ключ не входит:
+    номер регистрации меняется со временем, карточка ищется по любому из своих DM (поле dm)."""
+    codes = [compact(t) for t in model_tokens(_glue(model or "")) if len(compact(t)) >= 3]
+    if not codes:
+        return None
+    key = f"P:{norm_company(producer) or '?'}|{'+'.join(dict.fromkeys(codes))}"
+    return f"{key}|{size}" if size else key
+
+
+def card_key(producer: Optional[str], model: Optional[str], dm: Optional[str], title: str = "") -> Optional[str]:
+    """Ключ карточки товара по оферте: P: (производитель + модель + размер); модели нет - по DM / производителю."""
+    return product_key(producer, model, size_of(title)) or model_key(producer, model, dm)
+
+
+def key_size(key: Optional[str]) -> str:
+    """Типоразмер из ключа «P:agfa|dt2b|35x43» (у старых ключей - пусто)."""
+    parts = (key or "").split("|")
+    return parts[2] if (key or "").startswith("P:") and len(parts) > 2 else ""
+
+
+def split_dms(text: Optional[str]) -> List[str]:
+    return list(dict.fromkeys(d.strip().upper() for d in re.split(r"[,;+\s]+", text or "")
+                              if d.strip().upper().startswith("DM")))
+
+
+def card_title(card: dict) -> str:
+    """Название карточки для окна: «Тип — Модель (коды) — Производитель»."""
+    kind = re.sub(r"^\s*lot\s*nr\.?\s*\d+\s*", "", card.get("name") or "", flags=re.IGNORECASE).strip()
+    kind = kind.split(";")[0].strip()
+    short = re.split(r"\s*[(,:]", kind)[0].strip()       # без уточнений: «Film radiologic 25 x 30 cm (10 x 12 inch), …»
+    kind = (short if len(short) >= 8 else kind)[:60]
+    size = key_size(card.get("model_key"))
+    if size and compact(size) not in compact(kind):
+        kind = f"{kind} {size}".strip()
+    model = (card.get("model") or "").strip()[:60]
+    missing = [c.strip() for c in re.split(r"[,;]", card.get("codes") or "")
+               if c.strip() and compact(c) not in compact(model)]
+    if missing:                                    # коды, которых не видно в названии модели
+        model = f"{model} ({', '.join(missing)})" if model else ", ".join(missing)
+    parts = [p for p in (kind, model, (card.get("producer") or "").strip()[:40]) if p]
+    if not parts:
+        return card.get("model_key") or ""
+    return " — ".join(parts)
+
+
 @dataclass
 class Card:
     key: str

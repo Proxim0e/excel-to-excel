@@ -72,8 +72,9 @@ def _codes(card: Dict) -> List[str]:
 
 def _dms(card: Dict) -> List[str]:
     """Номера DM карточки; поле пустое - из ключа модели «DM:DM000152480+DM…»."""
+    from src.history.cards import split_dms
     text = card.get("dm") or ((card.get("model_key") or "")[3:] if (card.get("model_key") or "").startswith("DM:") else "")
-    return [d.strip() for d in re.split(r"[,;+ ]", text) if d.strip().upper().startswith("DM")]
+    return split_dms(text)
 
 
 def _period(year: Optional[int], tender_id: str, current_tender: str, current_year: int) -> str:
@@ -107,14 +108,28 @@ def history_card(kb: sqlite3.Connection, card: Dict) -> Dict:
     dms = _dms(card)
     if not dms:
         return {}
+    size = _card_size(card)
     for d in dms:
-        row = kb.execute("SELECT o.producer, o.model, o.dm, l.title FROM current_offers o "
-                         "LEFT JOIN lots l ON l.snapshot_id = o.snapshot_id AND l.sheet = o.sheet "
-                         "WHERE o.dm LIKE ? ORDER BY o.snapshot_id DESC LIMIT 1", (f"%{d}%",)).fetchone()
+        rows = kb.execute("SELECT o.producer, o.model, o.dm, l.title FROM current_offers o "
+                          "LEFT JOIN lots l ON l.snapshot_id = o.snapshot_id AND l.sheet = o.sheet "
+                          "WHERE o.dm LIKE ? ORDER BY o.snapshot_id DESC", (f"%{d}%",)).fetchall()
+        row = next((r for r in rows if not _other_size(size, r[3])), None)
         if row:
             return {"producer": row[0], "model": row[1], "dm": row[2],
                     "name": re.sub(r"^\s*lot\s*nr\.?\s*\d+\s*", "", row[3] or "", flags=re.IGNORECASE)}
     return {}
+
+
+def _card_size(card: Dict) -> str:
+    from src.history.cards import key_size, size_of
+    return key_size(card.get("model_key")) or size_of(card.get("name"))
+
+
+def _other_size(card_size: str, lot_title: Optional[str]) -> bool:
+    """Оферта по лоту другого типоразмера (код модели и DM у плёнок 20×25 и 35×43 общие) - не эта карточка."""
+    from src.history.cards import size_of
+    size = size_of(lot_title)
+    return bool(card_size and size and size != card_size)
 
 
 def _offer_matches(dm: str, model: str, dms: List[str], codes: List[str]) -> bool:
@@ -147,10 +162,12 @@ def agent_candidates(kb: sqlite3.Connection, card: Dict, tender_id: str, partici
             "SELECT participant, tender_id, lot_no, status, decided_at FROM evaluations WHERE model_key = ?",
             (card.get("model_key"),)):
         add(name, tid, lot, int(at[:4]) if at and at[:4].isdigit() else None, status, status == "corespunde")
+    size = _card_size(card)
     rows = kb.execute("SELECT o.participant, o.tender_id, o.lot_no, o.dm, o.model, o.final_decision, "
-                      "s.file_mtime, s.source_file FROM current_offers o JOIN snapshots s ON s.id = o.snapshot_id").fetchall()
-    for name, tid, lot, dm, model, decision, mtime, source in rows:
-        if _offer_matches(dm, model, dms, codes):
+                      "s.file_mtime, s.source_file, l.title FROM current_offers o JOIN snapshots s ON s.id = o.snapshot_id "
+                      "LEFT JOIN lots l ON l.snapshot_id = o.snapshot_id AND l.sheet = o.sheet").fetchall()
+    for name, tid, lot, dm, model, decision, mtime, source, title in rows:
+        if _offer_matches(dm, model, dms, codes) and not _other_size(size, title):
             add(name, tid, lot, fallback_year(source, mtime), decision, decision == "accepted")
     # одна фирма в разных написаниях - имя как у текущего участника / самое частое
     names: Dict[str, Dict[str, int]] = {}
@@ -245,8 +262,9 @@ def price_history(kb: sqlite3.Connection, card: Dict, tender_id: str = "", parti
                       "o.offer_value, o.price_ratio, l.quantity, l.base_price, s.file_mtime, s.source_file, l.title "
                       "FROM current_offers o JOIN snapshots s ON s.id = o.snapshot_id "
                       "LEFT JOIN lots l ON l.snapshot_id = o.snapshot_id AND l.sheet = o.sheet").fetchall()
+    size = _card_size(card)
     for name, tid, lot, dm, model, decision, unit, value, ratio, qty, base_price, mtime, source, title in rows:
-        if not _offer_matches(dm, model, dms, codes):
+        if not _offer_matches(dm, model, dms, codes) or _other_size(size, title):
             continue
         year = years.get(tid) or fallback_year(source, mtime)
         out.append({"year": year, "period": _period(year, tid, tender_id, current_year), "tender_id": tid,

@@ -15,13 +15,15 @@ from typing import Callable, Dict, List, Optional
 
 from src.evaluate.answers import answer_card
 from src.evaluate.cards import save_card
+from src.evaluate.history import resolve_key
+from src.history.cards import card_key, card_title, split_dms
 from src.ui.card_form import CardForm
 
 logger = logging.getLogger("ui")
 
-COLUMNS = (("model_key", "Ключ модели", 170), ("producer", "Производитель", 160), ("model", "Модель", 140),
-           ("dm", "DM", 110), ("name", "Изделие", 260), ("agents", "Агенты", 160), ("source", "Статус", 90),
-           ("updated", "Изменена", 120))
+COLUMNS = (("title", "Карточка (тип — модель — производитель)", 380), ("dm", "DM (все номера)", 150),
+           ("agents", "Агенты", 160), ("source", "Статус", 90), ("updated", "Изменена", 120),
+           ("model_key", "Ключ", 170))
 SOURCE_LABELS = {"human": "подтверждена", "prefill": "предложена"}
 FILTERS = ("все", "подтверждённые", "предложенные")
 PRODUCT_COLS = ("model_key", "producer", "model", "codes", "dm", "name", "params", "compatible_with", "iso",
@@ -81,6 +83,8 @@ class CardsTab:
         keys = [c if " " not in c else "updated" for c in PRODUCT_COLS]
         keys[-1] = "updated"
         self.rows = [dict(zip(keys, r)) for r in rows]
+        for r in self.rows:
+            r["title"] = card_title(r)
         self.fill()
 
     def visible(self) -> List[Dict]:
@@ -91,7 +95,7 @@ class CardsTab:
             if flt == "подтверждённые" and r["source"] != "human" or flt == "предложенные" and r["source"] == "human":
                 continue
             if text and text not in " ".join(str(r.get(k) or "") for k in
-                                             ("model_key", "producer", "model", "codes", "dm", "name", "agents")).lower():
+                                             ("title", "model_key", "producer", "model", "codes", "dm", "name", "agents")).lower():
                 continue
             out.append(r)
         out.sort(key=lambda r: str(r.get(self.sort_col) or ""), reverse=self.sort_desc)
@@ -175,27 +179,42 @@ class CardsTab:
         self.on_change()
 
     def new_card(self, key: Optional[str] = None):
-        key = key or simpledialog.askstring("Новая карточка", "Номер DM (DM000…) или «производитель|модель»:",
-                                            parent=self.parent)
+        """«Производитель | модель | название с размером» или номер DM. Карточка с этим ключом или с этим DM
+        в списке номеров уже есть - выделяется она."""
+        key = key or simpledialog.askstring(
+            "Новая карточка", "Производитель | модель | название с размером\n"
+            "(например: Agfa | Drystar DT2B | Film radiologic 35x43)\nили номер DM (DM000…):", parent=self.parent)
         if not key or not key.strip():
             return None
         key = key.strip()
-        model_key = f"DM:{key.upper()}" if key.upper().startswith("DM") else (key if ":" in key else f"M:{key.lower()}")
+        card = {"params": {}, "source": "new"}
+        if key.upper().startswith("DM") and "|" not in key:
+            dms = split_dms(key)
+            model_key = resolve_key(self.kb, "DM:" + "+".join(dms), dms)
+            card["dm"] = ", ".join(dms)
+        elif ":" in key.split("|")[0]:                     # уже готовый ключ
+            model_key = key
+        else:
+            parts = [x.strip() for x in key.split("|")] + ["", ""]
+            producer, model, name = parts[:3]
+            model_key = card_key(producer, model, "", name) or f"M:{key.lower()}"
+            card.update({"producer": producer, "model": model, "name": name})
+        card["model_key"] = model_key
         if self.kb.execute("SELECT 1 FROM products WHERE model_key = ? AND source != 'deleted'",
                            (model_key,)).fetchone():
             if self.tree.exists(model_key):
                 self.tree.selection_set(model_key)
                 self.tree.see(model_key)
             return self.form
-        card = {"model_key": model_key, "dm": key.upper() if key.upper().startswith("DM") else "", "params": {},
-                "source": "new"}
         return self.edit(card)
 
     def delete_selected(self, confirm: bool = True):
         sel = self.tree.selection()
         if not sel:
             return
-        if confirm and not messagebox.askyesno("Удалить", f"Удалить карточки: {', '.join(sel)}?", parent=self.parent):
+        titles = [next((r["title"] for r in self.rows if r["model_key"] == k), k) for k in sel]
+        if confirm and not messagebox.askyesno("Удалить", "Удалить карточки:\n" + "\n".join(titles) + "?",
+                                               parent=self.parent):
             return
         from datetime import datetime
         now = datetime.now().isoformat(timespec="seconds")

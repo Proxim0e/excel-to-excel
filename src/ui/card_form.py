@@ -19,6 +19,7 @@ from tkinter import messagebox, ttk
 from typing import Callable, Dict, List, Optional
 
 from src.evaluate.cards import split_param
+from src.history.cards import card_title
 from src.ui import card_data as cd
 
 logger = logging.getLogger("ui")
@@ -60,7 +61,8 @@ class CardForm:
         self.result = result          # result-файл текущего тендера - цена оферты участника
         self.parent, self.kb, self.q, self.on_save, self.save_text = parent, kb, q, on_save, save_text
         payload = q.get("payload") or {}
-        self.card = dict(payload.get("card") or {"model_key": q["model_key"]})
+        self.card = dict(payload.get("card") or {})
+        self.card["model_key"] = q.get("model_key") or self.card.get("model_key")   # ключ мог смениться (rekey)
         # пустые поля - из последней оферты этой модели в истории тендеров (по номеру DM)
         self.from_history = []
         for k, v in cd.history_card(kb, self.card).items():
@@ -85,7 +87,9 @@ class CardForm:
         f = self.parent
         head = ttk.Frame(f)
         head.pack(fill="x")
-        ttk.Label(head, text=f"Карточка товара: {self.card['model_key']}", font=("Segoe UI", 11, "bold")).pack(side="left")
+        self.title_var = tk.StringVar(value=card_title(self.card))
+        ttk.Label(head, textvariable=self.title_var, font=("Segoe UI", 11, "bold")).pack(side="left")
+        ttk.Label(head, text=f"  ключ: {self.card['model_key']}", foreground="gray").pack(side="left")
         self.save_button = ttk.Button(head, text=self.save_text, command=self.save)
         self.save_button.pack(side="right")
 

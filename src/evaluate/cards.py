@@ -76,9 +76,53 @@ def prefill(model_key: str, offer: Optional[dict], registration: Optional[OfferR
             "params": params, "compatible_with": "", "iso": ", ".join(registration.quality_docs) if registration else ""}
 
 
-def save_card(kb: sqlite3.Connection, card: Dict, source: str = "human") -> None:
-    """Сохраняет карточку (подтверждённую человеком - source = human). Подтверждённую prefill не затирает."""
+def proper_key(card: Dict) -> Optional[str]:
+    """Ключ по полям карточки: производитель + модель (коды) + типоразмер (из ключа или названия)."""
+    from src.history.cards import key_size, product_key, size_of
+    size = key_size(card.get("model_key")) or size_of(card.get("name"))
+    return product_key(card.get("producer"), card.get("codes") or card.get("model"), size)
+
+
+def rename_key(kb: sqlite3.Connection, old: str, new: str) -> None:
+    """Карточка получила новый ключ: решения и вопросы переходят к нему. Уже есть карточка с новым ключом -
+    остаётся подтверждённая человеком, номера DM обеих объединяются. У подтверждённой карточки на старом
+    ключе - отметка «deleted» (через git старая карточка удалится и на другом ПК); предложенная системой
+    просто переезжает - другой ПК переведёт свою сам (src/history/rekey.py)."""
+    from src.history.cards import split_dms
+    if not old or not new or old == new:
+        return
     now = datetime.now().isoformat(timespec="seconds")
+    row = kb.execute("SELECT dm, source FROM products WHERE model_key = ?", (old,)).fetchone()
+    target = kb.execute("SELECT dm, source FROM products WHERE model_key = ? AND source != 'deleted'",
+                        (new,)).fetchone()
+    if row and row[1] != "deleted":
+        dms = ", ".join(dict.fromkeys(split_dms(row[0]) + split_dms(target[0] if target else "")))
+        if target and target[1] == "human" and row[1] != "human":
+            kb.execute("DELETE FROM products WHERE model_key = ?", (old,))     # остаётся подтверждённая
+        else:
+            kb.execute("DELETE FROM products WHERE model_key = ?", (new,))
+            kb.execute("UPDATE products SET model_key = ? WHERE model_key = ?", (new, old))
+        kb.execute("UPDATE products SET dm = ? WHERE model_key = ?", (dms, new))
+        if row[1] == "human":
+            kb.execute("INSERT INTO products (model_key, source, updated_at) VALUES (?, 'deleted', ?)", (old, now))
+    kb.execute("UPDATE evaluations SET model_key = ? WHERE model_key = ?", (new, old))
+    kb.execute("UPDATE OR IGNORE questions SET model_key = ? WHERE model_key = ? AND kind != 'medical_type'", (new, old))
+    kb.execute("UPDATE questions SET state = 'answered' WHERE model_key = ? AND kind = 'product_card' AND state = 'open'",
+               (old,))
+
+
+def save_card(kb: sqlite3.Connection, card: Dict, source: str = "human") -> None:
+    """Сохраняет карточку (подтверждённую человеком - source = human). Подтверждённую prefill не затирает.
+    Человек поправил производителя / модель / размер - карточка переходит на новый ключ (rename_key)."""
+    now = datetime.now().isoformat(timespec="seconds")
+    if source == "human":
+        new = proper_key(card)
+        if new and new != card["model_key"]:
+            from src.history.cards import split_dms
+            rename_key(kb, card["model_key"], new)
+            card["model_key"] = new
+            row = kb.execute("SELECT dm FROM products WHERE model_key = ?", (new,)).fetchone()
+            card["dm"] = ", ".join(dict.fromkeys(split_dms(card.get("dm")) + split_dms(row[0] if row else "")))
     existing = kb.execute("SELECT source FROM products WHERE model_key = ?", (card["model_key"],)).fetchone()
     if existing and existing[0] == "human" and source != "human":
         return

@@ -125,11 +125,12 @@ CREATE TABLE IF NOT EXISTS events (
 
 -- Карточка товара: подтверждённая человеком (source = human) или предзаполненная (prefill)
 CREATE TABLE IF NOT EXISTS products (
-    model_key       TEXT PRIMARY KEY,   -- src/history/cards.py:model_key
+    model_key       TEXT PRIMARY KEY,   -- «P:производитель|коды модели|размер» (src/history/cards.py:card_key);
+                                        -- без модели - «DM:…»; DM меняется - карточка ищется по полю dm
     producer        TEXT,
     model           TEXT,
     codes           TEXT,               -- коды модели через запятую
-    dm              TEXT,               -- номера DM через запятую
+    dm              TEXT,               -- все номера DM карточки (старые и новые) через запятую
     name            TEXT,               -- что это за изделие
     params          TEXT,               -- JSON: параметр -> значение
     compatible_with TEXT,               -- с каким аппаратом совместимо

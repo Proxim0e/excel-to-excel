@@ -52,6 +52,21 @@ def _rows(conn: sqlite3.Connection, sql: str, params) -> List[dict]:
     return [dict(zip(names, row)) for row in cur.fetchall()]
 
 
+def resolve_key(conn: sqlite3.Connection, key: Optional[str], dms: List[str], size: str = "") -> Optional[str]:
+    """Ключ существующей карточки: точный ключ, иначе карточка, у которой в списке DM есть номер оферты
+    (DM меняется со временем - старый и новый номер ведут к одной карточке) и тот же типоразмер."""
+    from src.history.cards import key_size, size_of, split_dms
+    if key and conn.execute("SELECT 1 FROM products WHERE model_key = ? AND source != 'deleted'", (key,)).fetchone():
+        return key
+    wanted = {d.upper() for d in dms}
+    if wanted:
+        for other, dm, name in conn.execute("SELECT model_key, dm, name FROM products WHERE source != 'deleted' "
+                                            "AND dm IS NOT NULL AND dm != '' ORDER BY source = 'human' DESC"):
+            if wanted & set(split_dms(dm)) and (key_size(other) or size_of(name)) == size:
+                return other
+    return key
+
+
 def lookup(conn: sqlite3.Connection, model_key: Optional[str], tender_id: str, requirement: str = "",
            title: str = "") -> HistoryInfo:
     """Карточка модели, её решения в других тендерах и похожие прошлые запросы."""

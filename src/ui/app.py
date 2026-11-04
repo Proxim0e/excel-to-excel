@@ -24,9 +24,11 @@ from src import config as app_config
 from src.config import BASE_DIR, RESOURCE_DIR
 from src.evaluate import confidence as cf
 from src.evaluate.answers import answer_card, answer_medical, answer_offer, open_questions
+from src.history.cards import card_title
 from src.history.db import DEFAULT_DB, connect
 from src.history import sync as answers_sync
 from src.history.review import REASONS
+from src.ui import clipboard
 from src.ui.card_form import CardForm
 from src.ui.cards_tab import CardsTab
 
@@ -171,6 +173,7 @@ class App:
     def __init__(self, root: tk.Tk, result: Optional[Path] = None, tender_dir: Optional[Path] = None,
                  db: Path = DEFAULT_DB, answers_dir: Optional[Path] = None):
         self.root, self.db = root, Path(db)
+        clipboard.install(root)               # Ctrl+C/V при русской раскладке, меню правой кнопки
         # ответы человека для git; в тестах - временная папка (по умолчанию - knowledge/answers, только с боевой базой)
         self.answers_dir = Path(answers_dir) if answers_dir else (
             answers_sync.ANSWERS_DIR if Path(db) == Path(DEFAULT_DB) else Path(db).parent / "answers")
@@ -750,7 +753,7 @@ class App:
         self.q_list.delete(0, "end")
         for i, q in enumerate(self.questions):
             if q["kind"] == "product_card":
-                text = f"Карточка: {q['model_key']}"
+                text = "Карточка: " + card_title(q["payload"].get("card") or {"model_key": q["model_key"]})
             elif q["kind"] == "medical_type":
                 text = f"Мед. изделие? «{q['model_key']}»"
             else:
@@ -907,7 +910,7 @@ class App:
     def _card_form(self, q: Dict):
         def save(card: Dict):
             answer_card(self.kb, q["id"], card)
-            logger.info(f"[UI] Карточка подтверждена: {card['model_key']}"
+            logger.info(f"[UI] Карточка подтверждена: {card_title(card)} [{card['model_key']}]"
                         + (f"; агенты: {card['agents']}" if card.get("agents") else ""))
             self._answered()
         self.card_form = CardForm(self.form, self.kb, q, self._card_dir(q.get("tender_id")), save,

@@ -176,7 +176,7 @@ class AppTests(unittest.TestCase):
         win = form.show_requirement()
         win.destroy()
         form.save_button.invoke()
-        row = self.app.kb.execute("SELECT agents, winners, params, source FROM products").fetchone()
+        row = self.app.kb.execute("SELECT agents, winners, params, source FROM products WHERE source = 'human'").fetchone()
         self.assertEqual(row[:2], ("Electeh SRL", "Labromed (2025, 21600000)"))
         self.assertEqual(row[3], "human")
 
@@ -184,7 +184,7 @@ class AppTests(unittest.TestCase):
         from src.evaluate.cards import save_card
         save_card(self.app.kb, {"model_key": "DM:DM1", "producer": "Fiab", "model": "F4141", "dm": "DM1",
                                 "params": {"Diametru": "5 mm"}}, source="prefill")
-        save_card(self.app.kb, {"model_key": "M:intco|sf01", "producer": "Intco", "model": "SF01"}, source="human")
+        save_card(self.app.kb, {"model_key": "P:intco|sf01", "producer": "Intco", "model": "SF01"}, source="human")
         self.app.tabs.select(self.app.cards_frame)
         tab = self.app._open_cards_tab()
         self.assertEqual(len(tab.tree.get_children()), 2)
@@ -194,7 +194,7 @@ class AppTests(unittest.TestCase):
         tab.filter_var.set("подтверждённые")
         tab.search_var.set("")
         tab.fill()
-        self.assertEqual(tab.tree.get_children(), ("M:intco|sf01",))
+        self.assertEqual(tab.tree.get_children(), ("P:intco|sf01",))
         tab.filter_var.set("все")
         tab.fill()
         # редактирование: предложенная карточка -> подтверждена, параметр изменён
@@ -203,8 +203,14 @@ class AppTests(unittest.TestCase):
         self.assertEqual(form.save_button.cget("text"), "Подтвердить карточку")
         form.param_widgets[0]["value"].set("6 mm")
         form.save_button.invoke()
-        self.assertEqual(self.app.kb.execute("SELECT source, params FROM products WHERE model_key = 'DM:DM1'").fetchone(),
-                         ("human", '{"Diametru": "6 mm"}'))
+        # с моделью ключ - производитель + модель (DM меняется со временем), предложенная карточка переехала
+        self.assertEqual(self.app.kb.execute("SELECT source, params, dm FROM products WHERE model_key = 'P:fiab|f4141'"
+                                             ).fetchone(), ("human", '{"Diametru": "6 mm"}', "DM1"))
+        self.assertIsNone(self.app.kb.execute("SELECT source FROM products WHERE model_key = 'DM:DM1'").fetchone())
+        self.assertIn("P:fiab|f4141", tab.tree.get_children())
+        # по старому номеру DM находится та же карточка
+        tab.new_card("DM1")
+        self.assertEqual(tab.tree.selection(), ("P:fiab|f4141",))
         self.assertTrue((self.app.answers_dir).glob("*.jsonl"))
         # новая карточка по номеру DM
         form = tab.new_card("DM000777")
@@ -213,10 +219,10 @@ class AppTests(unittest.TestCase):
         self.assertEqual(self.app.kb.execute("SELECT producer FROM products WHERE model_key = 'DM:DM000777'").fetchone(),
                          ("Natus",))
         # удаление - метка, из списка пропадает
-        tab.tree.selection_set("M:intco|sf01")
+        tab.tree.selection_set("P:intco|sf01")
         tab.delete_selected(confirm=False)
-        self.assertNotIn("M:intco|sf01", tab.tree.get_children())
-        self.assertEqual(self.app.kb.execute("SELECT source FROM products WHERE model_key = 'M:intco|sf01'").fetchone(),
+        self.assertNotIn("P:intco|sf01", tab.tree.get_children())
+        self.assertEqual(self.app.kb.execute("SELECT source FROM products WHERE model_key = 'P:intco|sf01'").fetchone(),
                          ("deleted",))
 
     def test_medical_type_question_in_window(self):
@@ -245,7 +251,7 @@ class AppTests(unittest.TestCase):
         engine.save(kb, ev, lot)
         kb.close()
         self.assertEqual(self.app.refresh_questions(), 2)               # карточка и статус оферты
-        self.assertEqual(self.app.q_list.get(0), "Карточка: DM:DM1")    # карточки - первыми
+        self.assertEqual(self.app.q_list.get(0), "Карточка: Fiab")    # карточки - первыми
         self.app.show_selected()
         self.assertEqual(self.app.current["kind"], "product_card")
         # подтвердить карточку кнопкой формы
