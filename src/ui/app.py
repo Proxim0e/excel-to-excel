@@ -111,6 +111,8 @@ class App:
         self.stage_var = tk.StringVar(value="Готово к работе")
         self.counts_var = tk.StringVar()
         self._build()
+        self.tender_var.trace_add("write", lambda *_: self._sync_tender())
+        self._sync_tender()
 
         handler = QueueHandler(self.log_queue)
         logging.getLogger().addHandler(handler)
@@ -173,6 +175,17 @@ class App:
         if path:
             self.result_var.set(path)
 
+    def _sync_tender(self):
+        """Тендер в работе виден всегда: номер из папки тендера - в поле ссылки (если оно пустое или от
+        другого тендера) и в заголовке окна."""
+        m = re.search(r"(\d{6,})", Path(self.tender_var.get() or "").name)
+        if not m:
+            return
+        tid = m.group(1)
+        if tid not in self.url_var.get():
+            self.url_var.set(f"https://achizitii.md/ro/public/tender/{tid}/")
+        self.root.title(f"Оценка тендеров - мед. изделия - тендер {tid}")
+
     def pick_tender(self):
         path = filedialog.askdirectory(initialdir=Path(BASE_DIR) / "downloads")
         if path:
@@ -217,6 +230,10 @@ class App:
             result = latest_result()
             if result:
                 self.root.after(0, lambda: self.result_var.set(str(result)))
+            m = re.search(r"tender/(\d+)", tender or "") or re.fullmatch(r"\s*(\d+)\s*", tender or "")
+            if m:
+                folder = Path(BASE_DIR) / "downloads" / m.group(1)
+                self.root.after(0, lambda: self.tender_var.set(str(folder)))
         self._start("Тендер", task)
 
     def run_evaluation(self):

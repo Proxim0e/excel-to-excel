@@ -4,6 +4,7 @@ import logging
 import time
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import os
 import shutil
 import threading
 from pathlib import Path
@@ -36,7 +37,19 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def main():
+def link_or_copy(src: Path, dst: Path) -> None:
+    """Тот же документ участника в папке другого лота: жёсткая ссылка - файл виден в каждой папке, а на диске
+    лежит один раз (21641880: 9.25 ГБ копий при 504 МБ уникального содержимого). Не вышло (другой диск,
+    FAT) - обычная копия."""
+    try:
+        os.link(src, dst)
+    except OSError:
+        shutil.copy2(src, dst)
+
+
+def main(tender: str = None):
+    """tender - номер или URL тендера: лоты берутся из formularele.xlsx заказчика на MTender
+    (src/tender_docs.py), а не из родительского файла resources/-*.xlsx."""
     # --- ЗАПУСК ОБЩЕГО ТАЙМЕРА СКРИПТА ---
     script_start_time = time.time()
 
@@ -50,10 +63,22 @@ def main():
     parent_data = {}
     tender_url = DEFAULT_TENDER_URL
 
+    if tender:
+        from src.tender_docs import ACHIZITII_URL, fetch_tender_docs, lots_from_formulare, tender_id
+        tender_url = ACHIZITII_URL.format(tender_id(tender))
+
     if not ONLY_DOWNLOAD:
         try:
-            parent_data = get_parent_data()
-            logger.info(f"Загружено {len(parent_data)} лотов из родительского файла.")
+            if tender:
+                docs = fetch_tender_docs(tender)
+                if "formulare" not in docs:
+                    logger.error("У тендера нет formularele.xlsx - укажите родительский файл (запуск без --tender)")
+                    return
+                parent_data = lots_from_formulare(docs["formulare"])
+                logger.info(f"Загружено {len(parent_data)} лотов из {docs['formulare'].name} (MTender).")
+            else:
+                parent_data = get_parent_data()
+                logger.info(f"Загружено {len(parent_data)} лотов из родительского файла.")
         except FileNotFoundError as e:
             logger.error(e)
             return
@@ -64,7 +89,7 @@ def main():
         # -----------------------------------------------------
         # 2. Получение URL тендера
         # -----------------------------------------------------
-        tender_url = get_tender_url_from_parent()
+        tender_url = tender_url if tender else get_tender_url_from_parent()
         if not tender_url:
             tender_url = DEFAULT_TENDER_URL
             logger.warning(f"URL тендера не найден в родительском файле. Использую дефолтный: {tender_url}")
@@ -330,7 +355,7 @@ def main():
         if cached_path and Path(cached_path).exists():
             try:
                 file_path.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(cached_path, file_path)
+                link_or_copy(Path(cached_path), file_path)
                 logger.info(f"[COPIED] Скопирован из кэша: {file_name} (Лот: {lot_name})")
                 return "copied"
             except Exception as e:
@@ -640,4 +665,8 @@ def classify_downloads(tender_folder):
 
 
 if __name__ == "__main__":
-    main()
+    import argparse
+    _ap = argparse.ArgumentParser(description="Скачивание и разбор тендера в result Excel")
+    _ap.add_argument("--tender", help="номер или URL тендера на achizitii.md: лоты из formularele.xlsx заказчика "
+                                      "(MTender) вместо родительского файла resources/-*.xlsx")
+    main(_ap.parse_args().tender)

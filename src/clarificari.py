@@ -198,6 +198,11 @@ def recheck_result(result_path: Path, tender_dir: Path, clar_dir: Path, round_no
     stats = defaultdict(int, {"round": round_no, "unmatched": info["unmatched"],
                               "companies": len(info["files"]), "files": sum(map(len, info["files"].values()))})
     by_key = {participant_key(p): p for p in info["files"]}
+    logger.info(f"[CLAR] Раунд {round_no}: папка {clar_dir}, компаний {stats['companies']}, файлов {stats['files']}")
+    for participant, names in sorted(info["files"].items()):
+        logger.info(f"[CLAR]   {participant}: {len(names)} файл(ов)")
+    if info["unmatched"]:
+        logger.warning(f"[CLAR] Папки без участника тендера: {', '.join(info['unmatched'])}")
 
     conn = sqlite3.connect(Path(tender_dir) / MANIFEST_NAME)
     offers = load_offers(conn)
@@ -258,11 +263,16 @@ def recheck_result(result_path: Path, tender_dir: Path, clar_dir: Path, round_no
                 stats[check.status] += 1
                 stats["rechecked"] += 1
                 changed = True
+                found = "подтверждено" if check.status == GREEN else "не подтверждено"
+                logger.info(f"[CLAR] лот {lot}, {participant}: {found} ({len(docs)} документ(ов))")
             if changed:
                 _recolor_tab(ws)
-        wb.save(out_path or result_path)
+        target = out_path or result_path
+        wb.save(target)
     finally:
         conn.close()
+    logger.info(f"[CLAR] Перепроверено жёлтых: {stats['rechecked']} -> зелёных {stats.get(GREEN, 0)}, "
+                f"жёлтых {stats.get(YELLOW, 0)}; уже были в этом раунде: {stats.get('already', 0)}. Файл: {target}")
     return dict(stats)
 
 
