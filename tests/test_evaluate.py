@@ -2,7 +2,7 @@ import sqlite3
 import unittest
 from unittest import mock
 
-from src.amdm.models import CHECK, FAIL, OK as AMDM_OK
+from src.amdm.models import CHECK, FAIL, OK as AMDM_OK, OfferRegistration
 from src.anexa22.evidence import GREEN, YELLOW, OfferCheck
 from src.evaluate import confidence as cf
 from src.evaluate import engine
@@ -10,7 +10,7 @@ from src.evaluate.history import HistoryInfo, lookup
 from src.history.db import SCHEMA
 
 CARD = {"model_key": "DM:DM1", "source": "human"}
-ACCEPTED = [{"status": "corespunde", "source": "human"}]
+ACCEPTED = [{"status": "corespunde", "source": "human", "similarity": 0.9}]
 
 
 def kb():
@@ -83,11 +83,40 @@ class EngineTests(unittest.TestCase):
     def test_history_lookup(self):
         conn = kb()
         conn.execute("INSERT INTO products (model_key, source, updated_at) VALUES ('DM:DM1', 'human', 'now')")
+        conn.execute("INSERT INTO lot_profiles VALUES ('T0', 5, 'Lot nr. 5 Electrod neutru', "
+                     "'Electrod neutru pentru electrochirurgie, adult, unică folosință', NULL)")
         conn.execute("INSERT INTO evaluations VALUES ('T0', 5, 'A', 'DM:DM1', 'corespunde', NULL, 1, 'human', '{}', 'now')")
         conn.execute("INSERT INTO evaluations VALUES ('T1', 7, 'A', 'DM:DM1', 'corespunde', NULL, 1, 'human', '{}', 'now')")
-        info = lookup(conn, "DM:DM1", "T1")
+        info = lookup(conn, "DM:DM1", "T1", "Electrod neutru pentru electrochirurgie adult de unică folosință")
         self.assertTrue(info.card_confirmed and info.accepted_before)
         self.assertEqual([o["tender_id"] for o in info.outcomes], ["T0"])  # текущий тендер не считается
+        self.assertEqual(info.similar_lots[0]["accepted"], ["A: DM:DM1"])
+        # та же модель, но на совсем другом запросе - не «принималась раньше»
+        self.assertFalse(lookup(conn, "DM:DM1", "T1", "Hîrtie termică pentru ECG 112 mm").accepted_before)
+
+    def test_human_answers_enable_auto_next_tender(self):
+        from src.evaluate.answers import answer_card, answer_offer, open_questions
+        conn = kb()
+        self.lot.participants = [participant("A", 0.5)]
+        self.lot.participants[0].offer["dm"] = ["DM1"]
+        green = OfferCheck(GREEN, declarative="ok")
+        with mock.patch.object(engine, "check_offer", return_value=green),                 mock.patch.object(engine, "amdm_check", return_value=[mock.Mock(reasons=[])]),                 mock.patch.object(engine, "overall_status", return_value=AMDM_OK):
+            self.lot.participants[0].registration = OfferRegistration("lot", 5, "A", dm_numbers=["DM1"])
+            [ev] = engine.evaluate_lot(self.lot, None, conn, {}, set())
+            engine.save(conn, ev, self.lot)
+            questions = open_questions(conn, "T1")
+            self.assertEqual([q["kind"] for q in questions], ["product_card", "offer_status"])
+            self.assertEqual(questions[0]["payload"]["card"]["dm"], "DM1")   # карточка предзаполнена
+            answer_card(conn, questions[0]["id"], questions[0]["payload"]["card"])
+            answer_offer(conn, questions[1]["id"], "corespunde")
+            self.assertEqual(open_questions(conn), [])
+            # следующий тендер, похожий запрос, та же модель - решение без вопроса
+            lot2 = engine.Lot("T2", 3, "lot 3", "Lot nr. 3 Electrod", "Electrod 5 mm")
+            lot2.participants = [participant("B", 0.7)]
+            lot2.participants[0].offer["dm"] = ["DM1"]
+            lot2.participants[0].registration = OfferRegistration("lot", 5, "A", dm_numbers=["DM1"])
+            [ev2] = engine.evaluate_lot(lot2, None, conn, {}, set())
+        self.assertEqual((ev2.status, ev2.source), (cf.CORESPUNDE, cf.AUTO))
 
 
 if __name__ == "__main__":

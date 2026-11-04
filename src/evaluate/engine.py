@@ -20,6 +20,7 @@ from src.anexa22.evaluate import participant_key
 from src.anexa22.evidence import check_offer
 from src.config import PERCENT_THRESHOLD
 from src.evaluate import confidence as cf
+from src.evaluate.cards import prefill, save_card
 from src.evaluate.history import HistoryInfo, lookup
 from src.excel.fill_offers import FIRST_PARTICIPANT_COL, ROW_NAME, ROW_SPEC, ROW_VALUE, load_offers
 from src.history.cards import model_key as make_model_key
@@ -147,8 +148,13 @@ def evaluate_participant(lot: Lot, p: Participant, manifest: sqlite3.Connection,
             amdm_reasons = [r for c in checks for r in c.reasons]
     findings["amdm"] = {"status": amdm_status, "reasons": amdm_reasons}
 
-    history = lookup(kb, key, lot.tender_id)
-    findings["history"] = {"card": history.card, "outcomes": history.outcomes[:10]}
+    history = lookup(kb, key, lot.tender_id, lot.requirement, lot.title)
+    findings["history"] = {"card": history.card, "outcomes": history.outcomes[:10],
+                           "similar_lots": history.similar_lots}
+    if not history.card and key:
+        dms = p.registration.dm_numbers if p.registration else []
+        record = next((amdm_records.get(dm) for dm in dms if amdm_records.get(dm)), None)
+        findings["card_prefill"] = prefill(key, p.offer, p.registration, record, lot.title)
     d = cf.decide(check, amdm_status, amdm_reasons, history)
     return result(d.status, d.source, d.confidence, d.reasons, d.reason_code, findings, d.ask_card)
 
@@ -204,10 +210,14 @@ def save(kb: sqlite3.Connection, ev: Evaluation, lot: Lot) -> Optional[str]:
                           json.dumps(payload, ensure_ascii=False, default=str), _now()))
         created = "offer_status" if cur.rowcount else None
         if ev.ask_card and ev.model_key:
+            card = ev.findings.get("card_prefill") or {"model_key": ev.model_key}
+            save_card(kb, card, source="prefill")
+            card_payload = {"lot_no": ev.lot_no, "participant": ev.participant, "lot_title": lot.title,
+                            "card": card}
             cur = kb.execute("INSERT OR IGNORE INTO questions (kind, tender_id, lot_no, participant, model_key, "
                              "payload, state, created_at) VALUES ('product_card', ?, 0, '', ?, ?, 'open', ?)",
-                             (ev.tender_id, ev.model_key, json.dumps({"lot_no": ev.lot_no, "participant": ev.participant},
-                                                                     ensure_ascii=False), _now()))
+                             (ev.tender_id, ev.model_key, json.dumps(card_payload, ensure_ascii=False, default=str),
+                              _now()))
             created = created or ("product_card" if cur.rowcount else None)
     kb.commit()
     return created
