@@ -57,7 +57,7 @@ KEEP_TAB_COLORS = {"FF001F4D", "001F4D", "00001F4D"}
 TEMPLATE_STATUS_FILLS = {None, "00000000", "FF00B0F0", "00B0F0"}
 STATUS_TEXT = "Tehnic    corespunde "  # как в шаблоне (E1)
 
-OFFER_FIELDS = ("model", "country", "producer", "spec_offered", "standards", "dm")
+OFFER_FIELDS = ("model", "country", "producer", "spec_offered", "standards", "dm", "item_name")
 
 
 def load_offers(conn: sqlite3.Connection) -> Dict[Tuple[int, str], dict]:
@@ -175,6 +175,7 @@ def fill_result(result_path: Path, tender_dir: Path, out_path: Optional[Path] = 
             statuses = []
             # Требование лота (B11) - для уровня 1: условия требования против значений Anexa 22
             requirement = str(ws.cell(row=ROW_SPEC, column=2).value or "")
+            title = str(ws.cell(row=1, column=2).value or "")  # B1: коды аппарата для совместимости
             status_text = ws.cell(row=ROW_STATUS, column=FIRST_PARTICIPANT_COL).value or STATUS_TEXT
             for col in range(FIRST_PARTICIPANT_COL, ws.max_column + 1):
                 name = ws.cell(row=ROW_NAME, column=col).value
@@ -199,7 +200,8 @@ def fill_result(result_path: Path, tender_dir: Path, out_path: Optional[Path] = 
                 spec = "\n".join(rec["spec_offered"])
                 check = None
                 if evidence and spec:
-                    check = check_offer(conn, rec["participant"], lot, "; ".join(rec["model"]), spec, requirement)
+                    check = check_offer(conn, rec["participant"], lot, "; ".join(rec["model"]), spec, requirement,
+                                        title=title, offered_extra=" ".join(rec["item_name"]))
                     stats["evidence"] += bool(check.evidence)
                     stats["no_docs"] += not check.has_docs
                     stats["conflicts"] += bool(check.conflicts)

@@ -211,6 +211,7 @@ def recheck_result(result_path: Path, tender_dir: Path, clar_dir: Path, round_no
                 continue
             lot = int(m.group(1))
             requirement = str(ws.cell(row=ROW_SPEC, column=2).value or "")
+            title = str(ws.cell(row=1, column=2).value or "")  # B1: коды аппарата для совместимости
             changed = False
             # справа налево: вставка колонки не сдвигает ещё не обработанных участников
             for col in range(ws.max_column, FIRST_PARTICIPANT_COL - 1, -1):
@@ -232,7 +233,8 @@ def recheck_result(result_path: Path, tender_dir: Path, clar_dir: Path, round_no
                 model = "; ".join(rec["model"])
                 pages = relevant_pages(pages_cache[participant], lot, model)
                 check = check_offer(conn, rec["participant"], lot, model,
-                                    "\n".join(rec["spec_offered"]), requirement, extra_pages=pages)
+                                    "\n".join(rec["spec_offered"]), requirement, extra_pages=pages,
+                                    title=title, offered_extra=" ".join(rec.get("item_name", [])))
                 docs = sorted({n for _, n, _, _ in pages})
                 note = check.note(only_documents=set(docs))
                 if not any(e.document in docs for e in check.evidence):

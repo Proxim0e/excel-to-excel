@@ -1,17 +1,23 @@
 """
-Уровень 1 проверки: предложенная спецификация (Anexa 22) против требования лота.
+Уровень 1 проверки - «юридическое совпадение»: предложение участника (Anexa 22) против запроса лота.
+Каждое условие запроса должно быть в предложении явно и выполнено (решение Ivan 04.11.2026); хоть одно
+не найдено или нарушено - оферта «Alternativa» (синий).
 
-Требование разбирается на числовые условия:
+Числовые условия запроса:
   «≥ 15 cm», «min. 3m», «Lungimea minima 150cm»          -> нижняя граница
   «≤ 60 ml», «max 5 microni», «nu mai mult de 10»         -> верхняя граница
   «70 mm (+-5mm)», «200cm (±10cm)», «240-310 cm»         -> диапазон
   «500 ml», «Ø 49mm»                                       -> точное значение
+  «30x30 mm»                                               -> размер целиком: 50x50 - другой размер
 Единицы приводятся к одной шкале внутри семейства (мм/см/м, мл/л, г/кг, мин/ч).
-Не размеры: «2,04 cm H2O» (давление), «15M (masculin)», «22F-15M» (разъёмы).
+Не размеры: «2,04 cm H2O» (давление), «15M (masculin)», «22F-15M» (разъёмы), «18 G» (калибр иглы).
+Значение засчитывается, только если подпись про тот же параметр («diametru ≥ 5 cm» не закрывается
+«lungime 150 cm»); значение без подписи - только если в запросе одно условие этого семейства.
 
-Для каждого условия ищется значение того же семейства единиц в предложенной спецификации:
-  в границах - ок; вне границ - расхождение («≠ cerință»); нет такого значения - «lipsește în A22».
-Расхождение по концепту - «проверить», а не отказ: разбор свободного текста эвристический.
+Совместимость: аппарат из запроса («compatibil cu Dräger 120», «pentru Electrocoagulator MBC-200») и коды
+аппарата из названия лота («Cablu ECG Carescape B450, GE») должны быть названы в предложении.
+Качественные признаки (steril, unică folosință / reutilizabil, adult / pediatric / nou-născut, fără latex):
+названы в запросе - должны быть в предложении, противоположные - расхождение.
 """
 import re
 import unicodedata
@@ -56,6 +62,8 @@ PATTERNS = [
 ]
 # «15M (masculin)», «22F-15M», «22M-15F» - размеры разъёмов, а не метры
 CONNECTOR_RE = re.compile(r"\d+\s?[mf]\s*\((?:masculin|feminin|male|female)|\d+[mf]\s*[-x/]\s*\d+[mf]\b")
+# «18 G», «22G» - калибр иглы/канюли, а не граммы (ищется в исходном тексте: заглавная G)
+GAUGE_RE = re.compile(r"(?<![\w.,])\d{1,2}\s?G\b")
 EPS = 1e-6
 COPY_SHARE = 0.95   # спецификация - копия требования, если в ней есть 95% его слов
 
@@ -67,6 +75,7 @@ class Constraint:
     hi: Optional[float]
     kind: str                # tol / range / min / max / exact
     text: str                # исходный фрагмент: «Lungime: ≥ 15 cm»
+    dims: Optional[Tuple[float, ...]] = None  # размер AxB целиком (по возрастанию) - у обеих сторон
 
     def satisfied_by(self, other: "Constraint") -> bool:
         """Значение/диапазон other укладывается в условие."""
@@ -127,6 +136,8 @@ def parse_constraints(text: str) -> List[Constraint]:
         return all(b <= s or a >= e for s, e in taken)
 
     connectors = [(m.start(), m.end()) for m in CONNECTOR_RE.finditer(folded)]
+    if len(folded) == len(text or ""):
+        connectors += [(m.start(), m.end()) for m in GAUGE_RE.finditer(text)]
     for kind, rx in PATTERNS:
         for m in rx.finditer(folded):
             if not free(m.start(), m.end()) or not all(m.end() <= s or m.start() >= e for s, e in connectors):
@@ -173,8 +184,9 @@ def _build(kind: str, m) -> List[Constraint]:
         u_a = _unit(g[1]) or u_b
         if not u_b:
             return []
-        return [Constraint(u_a[0], _num(g[0]) * u_a[1], _num(g[0]) * u_a[1], "exact", ""),
-                Constraint(u_b[0], _num(g[2]) * u_b[1], _num(g[2]) * u_b[1], "exact", "")]
+        a, b = _num(g[0]) * u_a[1], _num(g[2]) * u_b[1]
+        dims = tuple(sorted((a, b))) if u_a[0] == u_b[0] else None
+        return [Constraint(u_a[0], a, a, "exact", "", dims), Constraint(u_b[0], b, b, "exact", "", dims)]
     if kind == "range":
         u_hi = _unit(g[3])
         u_lo = _unit(g[1]) or u_hi
@@ -206,18 +218,32 @@ def is_copy(offered: str, required: str) -> bool:
     return sum(w in have for w in req) / len(req) >= COPY_SHARE
 
 
+OK, ALTERNATIVA = "ok", "alternativa"
+
+
 @dataclass
 class DeclarativeCheck:
-    conflicts: List[str]       # «Lungime: ≥ 15 cm (A22: 10 cm)»
-    missing: List[str]         # условия требования без значения в Anexa 22
+    conflicts: List[str]       # «Lungime: ≥ 15 cm (A22: 10 cm)», «steril (A22: nesteril)»
+    missing: List[str]         # условия запроса, которых нет в Anexa 22 (в т.ч. совместимость)
     copy: bool                 # спецификация - копия требования
     matched: List[Tuple[Constraint, Constraint]]  # (условие требования, значение участника)
-    # Незакрытые условия требования с текстом пометки - их могут закрыть документы уточнений
+    # Незакрытые числовые условия с текстом пометки - их могут закрыть документы уточнений
     open_conditions: List[Tuple[Constraint, str]] = None
+
+    @property
+    def status(self) -> str:
+        """ok - всё из запроса названо и выполнено; alternativa - нет данных или противоречие."""
+        return ALTERNATIVA if (self.conflicts or self.missing) else OK
+
+
+# Слова подписи, которые ничего не говорят о параметре: «minim 150 cm» - подписи нет
+GENERIC_WORDS = {"minim", "minima", "minimum", "maxim", "maxima", "maximum", "pana", "mult", "putin",
+                 "este", "sunt", "fara", "pentru", "conform", "valoare", "marime", "marimea", "dimensiune",
+                 "dimensiuni", "microni", "micron", "cicluri", "bari"}
 
 
 def _label_words(text: str) -> set:
-    return {w for w in re.findall(r"[a-z]{4,}", normalize(text))}
+    return {w for w in re.findall(r"[a-z]{4,}", normalize(text))} - GENERIC_WORDS
 
 
 # Слова, которые делают параметры разными при общем названии: «diametru exterior» и «diametru interior»
@@ -226,9 +252,10 @@ DISTINCT_PAIRS = [("interior", "exterior"), ("intern", "extern"), ("inspir", "ex
 
 
 def _related(a: str, b: str) -> bool:
-    """Подписи про один и тот же параметр: есть общие слова и нет различающих пар."""
+    """Подписи про один и тот же параметр: есть общие слова и нет различающих пар. Слова сравниваются по
+    основе (первые 6 букв): «Manșete» и «Manseta», «Lungime» и «Lungimea»."""
     wa, wb = _label_words(a), _label_words(b)
-    if not wa & wb:
+    if not {w[:6] for w in wa} & {w[:6] for w in wb}:
         return False
     for x, y in DISTINCT_PAIRS:
         has_a = (any(x in w for w in wa), any(y in w for w in wa))
@@ -238,33 +265,173 @@ def _related(a: str, b: str) -> bool:
     return True
 
 
-def check_declarative(offered: str, required: str) -> DeclarativeCheck:
-    """
-    Каждое условие требования против значений того же семейства единиц в Anexa 22:
-      значение укладывается в условие или пересекается с ним («150-180 cm» и «≥ 160 cm») - ок;
-      значение явно про тот же параметр и не пересекается - расхождение;
-      значения того же семейства нет - условие не упомянуто в Anexa 22.
-    """
-    req = parse_constraints(required)
-    off = parse_constraints(offered)
+def _fmt_dims(values, family: str) -> str:
+    unit = {"len": "mm", "vol": "ml", "mass": "g", "time": "min"}.get(family, "")
+    return "x".join(f"{v:g}" for v in values) + (f" {unit}" if unit else "")
+
+
+def _check_numbers(req: List[Constraint], off: List[Constraint]):
+    """Числовые условия: значение засчитывается только при родственной подписи (или без подписи, если
+    в запросе одно условие этого семейства); размер AxB - целиком."""
     conflicts, missing, matched, open_conditions = [], [], [], []
+    # Сколько разных условий каждого семейства в запросе (одно и то же «5mm» дважды - одно условие)
+    per_family = {}
     for c in req:
+        per_family.setdefault(c.family, set()).add(c.dims or (c.lo, c.hi))
+    per_family = {k: len(v) for k, v in per_family.items()}
+    done_dims = set()
+    for c in req:
+        if c.dims:
+            key = (c.family, c.dims)
+            if key in done_dims:
+                continue
+            done_dims.add(key)
+            offered_dims = sorted({o.dims for o in off if o.dims and o.family == c.family})
+            if c.dims in offered_dims:
+                matched.append((c, next(o for o in off if o.dims == c.dims)))
+                continue
+            if offered_dims:
+                # «30x30 mm» против «50x50 mm» - другой размер
+                note = f"{c.text} (A22: {_fmt_dims(offered_dims[0], c.family)})"
+                conflicts.append(note)
+                open_conditions.append((c, note))
+                continue
+            # в предложении размер не парой: стороны ищем как обычные значения
         same = [o for o in off if o.family == c.family]
-        ok = [o for o in same if c.satisfied_by(o) or c.overlaps(o)]
+        fits = [o for o in same if c.satisfied_by(o) or c.overlaps(o)]
+        ok = [o for o in fits if _related(o.text, c.text)]
+        # Условие без подписи («…, 5mm», «10 microni») сравнить по подписи нельзя - годится любое подходящее
+        # значение; значение без подписи - если в запросе одно условие этого семейства
+        req_bare = not _label_words(c.text)
+        if not ok and req_bare:
+            ok = fits
+        elif not ok and per_family[c.family] <= 1:
+            ok = [o for o in fits if not _label_words(o.text)]
         if ok:
             # при нескольких подходящих - с наибольшим совпадением слов названия параметра
             best = max(ok, key=lambda o: len(_label_words(o.text) & _label_words(c.text)))
             matched.append((c, best))
             continue
         # Расхождение - только если значение явно про тот же параметр (общие слова в названии);
-        # иначе это, скорее всего, другой размер того же семейства (диаметр против длины)
+        # иначе про этот параметр в Anexa 22 ничего нет («diametru» при «lungime», «exterior» при «interior»)
         related = [o for o in same if _related(o.text, c.text)]
-        if related:
-            note = f"{c.text} (A22: {related[0].text})"
-            conflicts.append(note)
-        else:
-            note = c.text  # про этот параметр в Anexa 22 ничего нет («exterior» при «interior»)
-            missing.append(note)
+        if not related and (req_bare or per_family[c.family] <= 1):
+            # «1,21m» против «2.4m»: обе без подписи - про один параметр, если иначе сравнить не с чем
+            related = [o for o in same if not _label_words(o.text)]
+        note = f"{c.text} (A22: {related[0].text})" if related else c.text
+        (conflicts if related else missing).append(note)
         open_conditions.append((c, note))
+    return conflicts, missing, matched, open_conditions
+
+
+# --- совместимость ------------------------------------------------------------------------------------
+COMPAT_CUE = re.compile(r"(?:compatibil\w*|utilizare cu|utilizat\w* cu|se utilizeaza cu|pentru)\s+(?:cu\s+)?"
+                        r"(?P<target>[^.;\n]{3,70})", re.IGNORECASE)
+# Число с единицей или количество - не код аппарата: «30W», «90cm», «14x17inch», «3ani»
+QUANTITY_TOKEN = re.compile(r"\d+(?:[.,]\d+)?(?:[x×х]\d+(?:[.,]\d+)?)*(?:" + UNIT_RX +
+                            r"|inch|ani|an|luni|buc|mkm|mcr|mcm|kg|w)?", re.IGNORECASE)
+# Слова с заглавной буквы в цели совместимости, которые не марка аппарата
+NOT_BRANDS = {"lot", "lotul", "tip", "set", "kit", "adult", "adulti", "copii", "pacient", "pacienti", "monitor",
+              "monitorul", "aparat", "aparatul", "ventilator", "ventilatorul", "sistem", "sistemul", "dispozitiv",
+              "electrocoagulator", "autoclav", "autoclavul", "sterilizator", "pompa", "cablu", "conform", "ecg",
+              "spo2", "nibp", "eeg", "masina", "generator", "imprimanta", "filtru", "seria"}
+
+
+def _code_tokens(text: str) -> List[str]:
+    """Коды аппарата: слова с буквами и цифрами («B450», «MX550», «SV650», «S1008-E2», «MBC-200»)."""
+    codes = []
+    for tok in re.findall(r"[A-Za-z0-9][\w\-/]*", text or ""):
+        tok = tok.strip("-/_")
+        if len(tok) < 2 or not re.search(r"[A-Za-z]", tok) or not re.search(r"\d", tok):
+            continue
+        if QUANTITY_TOKEN.fullmatch(tok):
+            continue
+        codes.append(tok)
+    return list(dict.fromkeys(codes))
+
+
+def _compact(text: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", normalize(text or ""))
+
+
+def compatibility_targets(required: str, title: str = "") -> List[Tuple[str, List[str], List[str]]]:
+    """[(фрагмент, коды, марки)] - аппарат, с которым изделие должно быть совместимо: из «compatibil cu …»,
+    «pentru …» запроса и коды аппарата из названия лота."""
+    targets = []
+    for m in COMPAT_CUE.finditer(required or ""):
+        phrase = m.group("target").strip(" ,:")
+        codes = _code_tokens(phrase)
+        # «Drager 120»: число сразу после марки - тоже модель
+        for n in re.findall(r"(?<=[A-Za-zĂÎȘȚÂăîșțâ]\s)\d{2,4}\b", phrase):
+            if n not in codes:
+                codes.append(n)
+        brands = [w for w in re.findall(r"\b[A-ZĂÎȘȚÂ][\wăîșțâ\-]{2,}", phrase)
+                  if normalize(w) not in NOT_BRANDS and not re.search(r"\d", w)]
+        if codes:
+            targets.append((phrase, codes, brands))
+    title = re.sub(r"^\s*lot(?:ul)?\s*(?:nr\.?)?\s*\d+\s*", "", title or "", flags=re.IGNORECASE)
+    known = {_compact(c) for t in targets for c in t[1]}
+    title_codes = [c for c in _code_tokens(title) if _compact(c) not in known]
+    if title_codes:
+        targets.append((title.strip(), title_codes, []))
+    return targets
+
+
+def _check_compatibility(offered: str, required: str, title: str) -> List[str]:
+    have = _compact(offered)
+    missing = []
+    for phrase, codes, brands in compatibility_targets(required, title):
+        lost = [c for c in codes if _compact(c) not in have]
+        if brands and not any(_compact(b) in have for b in brands):
+            lost.append(brands[0])
+        if lost:
+            missing.append(f"compatibilitate neindicată: {phrase[:60]} ({', '.join(lost)})")
+    return missing
+
+
+# --- качественные признаки ----------------------------------------------------------------------------
+# Группа: [(признак, шаблон по normalize-тексту)]; признаки одной группы взаимоисключающие
+QUALITY_GROUPS = [
+    [("steril", r"(?<!ne)(?<!non)(?<!non-)\bsteril[ae]?\b"), ("nesteril", r"\bne-?steril|\bnon-?steril")],
+    [("unică folosință", r"unic[ae]? (?:de )?folosint|de unica utilizare|single[- ]use|disposable|"
+                         r"o singura (?:data|utilizare)"),
+     ("reutilizabil", r"reutiliz|reusable|refolosibil")],
+    [("adult", r"\badult"), ("pediatric", r"pediatric|\bcopii\b"), ("nou-născut", r"neonat|nou[- ]?nascu")],
+    [("fără latex", r"(?:fara|free of|nu contine)\s+latex|latex[- ]?free")],
+]
+
+
+def _check_quality(offered: str, required: str):
+    req, off = normalize(required or ""), normalize(offered or "")
+    conflicts, missing = [], []
+    for group in QUALITY_GROUPS:
+        asked = [name for name, rx in group if re.search(rx, req)]
+        if not asked:
+            continue
+        given = [name for name, rx in group if re.search(rx, off)]
+        for name in asked:
+            if name in given:
+                continue
+            others = [g for g in given if g not in asked]
+            if others:
+                conflicts.append(f"{name} (A22: {', '.join(others)})")
+            else:
+                missing.append(name)
+    return conflicts, missing
+
+
+def check_declarative(offered: str, required: str, title: str = "", offered_extra: str = "") -> DeclarativeCheck:
+    """
+    Юридическое совпадение: каждое условие запроса (B11 и коды аппарата из названия лота) явно названо и
+    выполнено в предложении. offered - предложенная спецификация (из неё числа); offered_extra - модель и
+    название позиции из Anexa 22 (совместимость и признаки часто указаны там).
+    """
+    req = parse_constraints(required)
+    off = parse_constraints(offered)
+    conflicts, missing, matched, open_conditions = _check_numbers(req, off)
+    whole = f"{offered or ''} {offered_extra or ''}"
+    q_conflicts, q_missing = _check_quality(whole, required)
+    conflicts += q_conflicts
+    missing += q_missing + _check_compatibility(whole, required, title)
     return DeclarativeCheck(list(dict.fromkeys(conflicts)), list(dict.fromkeys(missing)),
                             is_copy(offered, required), matched, open_conditions)

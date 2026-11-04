@@ -60,6 +60,68 @@ class DeclarativeTests(unittest.TestCase):
         self.assertEqual(r.conflicts, [])
         self.assertIn("Impedanță 10 Hz ≤ 150 ohm", r.missing[-1])
 
+    def test_label_must_match(self):
+        # «diametru ≥ 5 cm» не закрывается длиной
+        r = check_declarative("Cablu, lungime 150 cm", "Diametru ≥ 5 cm")
+        self.assertEqual(r.missing, ["Diametru ≥ 5 cm"])
+        self.assertEqual(r.status, "alternativa")
+        # значение без подписи - если в запросе одно условие этого семейства
+        r = check_declarative("150 cm", "Lungime ≥ 100 cm")
+        self.assertEqual(r.status, "ok")
+
+    def test_unlabeled_requirement(self):
+        # 21643233, лоты 323 и 364: копия запроса, значения без подписи
+        req = "Electrod activ reutilizabil tip billă, 5mm Lungime12 cm diametru bilă 5mm"
+        self.assertEqual(check_declarative(req, req).status, "ok")
+        req = "Cartus din fir de polipropilena 10'', 10 microni Cartus din fir de polipropilena 10'', 10 microni"
+        self.assertEqual(check_declarative(req, req).status, "ok")
+        # лот 277: 1,21m против 2.4m - расхождение, а не «нет данных»
+        r = check_declarative("Cablu SpO2 25 pini la LNCS, drept , 2.4m", "Cablu SpO2 25 pini la LNCS, drept , 1,21m")
+        self.assertEqual(len(r.conflicts), 1)
+
+    def test_requested_5_given_4(self):
+        r = check_declarative("Lungime 4 cm", "Lungime 5 cm")
+        self.assertEqual(len(r.conflicts), 1)
+        self.assertEqual(r.status, "alternativa")
+
+    def test_dimensions_whole(self):
+        # пример Ivan: ЭКГ-электрод 30x30 против 50x50, остальное ок
+        req = "Electrod ECG 30x30 mm, Ag/AgCl, adult"
+        r = check_declarative("Electrod ECG 50x50 mm, Ag/AgCl, adult", req)
+        self.assertIn("(A22: 50x50 mm)", r.conflicts[0])
+        self.assertEqual(r.status, "alternativa")
+        self.assertEqual(check_declarative("Electrod 30 x 30 mm Ag/AgCl adult", req).status, "ok")
+
+    def test_gauge_is_not_grams(self):
+        self.assertEqual(bounds("Ac 18 G, lungime 40 mm"), [("exact", "len", 40, 40)])
+
+    def test_compatibility_must_be_named(self):
+        # пример Ivan: просим кабель для Dräger 120, в оферте не сказано, с чем совместим
+        req = "Cablu de interconectare compatibil cu Drager 120, lungime ≥ 2 m"
+        r = check_declarative("Cablu de interconectare, lungime 3 m", req)
+        self.assertEqual(r.status, "alternativa")
+        self.assertIn("compatibilitate neindicată", r.missing[0])
+        self.assertEqual(check_declarative("Cablu de interconectare pentru Dräger 120, lungime 3 m", req).status, "ok")
+
+    def test_device_from_lot_title(self):
+        title = "Lot nr. 282 Cablu ECG Carescape B450, GE"
+        r = check_declarative("Cablu ECG 5 fire", "Cablu ECG 5 fire", title=title)
+        self.assertEqual(r.status, "alternativa")
+        r = check_declarative("Cablu ECG 5 fire", "Cablu ECG 5 fire", title=title, offered_extra="U302-15CE GE B450")
+        self.assertEqual(r.status, "ok")
+        # размеры и количества в названии - не коды аппарата
+        r = check_declarative("Film radiologic", "Film", title="Lot nr. 406 Film radiologic 35x43(14x17inch), 30W")
+        self.assertEqual(r.missing, [])
+
+    def test_quality_attributes(self):
+        r = check_declarative("Electrod reutilizabil, adult", "Electrod de unică folosință, adult")
+        self.assertEqual(r.conflicts, ["unică folosință (A22: reutilizabil)"])
+        r = check_declarative("Manusi chirurgicale", "Manusi chirurgicale sterile, fără latex")
+        self.assertEqual(sorted(r.missing), ["fără latex", "steril"])
+        self.assertEqual(check_declarative("Manusi sterile, latex free", "Manusi sterile, fără latex").status, "ok")
+        # «sterilizabil» - не «steril»
+        self.assertEqual(check_declarative("Recipient sterilizabil", "Recipient").status, "ok")
+
     def test_copy(self):
         req = "Electrod ECG, Adeziv, Ag/AgCl, Tip snap button, De unica folosinta, Tip pacient: Adult"
         self.assertTrue(is_copy(req + " *Conform broșură pagina 1", req))

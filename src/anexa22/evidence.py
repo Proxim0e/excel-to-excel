@@ -102,6 +102,7 @@ class OfferCheck:
     conflicts: List[str] = field(default_factory=list)         # уровень 1: значение A22 вне требования
     missing_in_offer: List[str] = field(default_factory=list)  # уровень 1: условие требования не упомянуто
     copy: bool = False                                         # спецификация - копия требования
+    declarative: str = ""      # уровень 1: «ok» / «alternativa» (запрос не совпал с A22); «» - запроса нет
 
     def note(self, only_documents: Optional[set] = None) -> str:
         """Что дописать в строку 11 после спецификации; only_documents - цитировать только эти
@@ -151,7 +152,8 @@ def parameter_label(spec: str, num: str, unit: str) -> str:
 
 
 def check_offer(conn: sqlite3.Connection, participant: str, lot: int, model: str, spec: str,
-                requirement: str = "", extra_pages: Optional[list] = None) -> OfferCheck:
+                requirement: str = "", extra_pages: Optional[list] = None, title: str = "",
+                offered_extra: str = "") -> OfferCheck:
     """
     Уровень 1 (если дано требование лота): условия требования против значений Anexa 22.
     Уровень 2: код модели и параметры из Anexa 22 в технических документах участника по лоту.
@@ -162,7 +164,8 @@ def check_offer(conn: sqlite3.Connection, participant: str, lot: int, model: str
     extra_pages - страницы документов уточнений [(sha, имя, страница, текст)]: участвуют в уровне 2
     и могут закрыть условия уровня 1 (участник прислал письмо или даташит с нужным значением).
     """
-    declared = check_declarative(spec, requirement) if requirement else None
+    # title - название лота (коды аппарата для совместимости), offered_extra - модель и позиция из A22
+    declared = check_declarative(spec, requirement, title, f"{model} {offered_extra}") if requirement else None
     codes = model_tokens(model)
     values = spec_values(spec)
     extra_pages = list(extra_pages or [])
@@ -215,6 +218,7 @@ def _with_declared(check: OfferCheck, declared, extra_pages: Optional[list] = No
     check.conflicts = [n for n in declared.conflicts if n not in resolved]
     check.missing_in_offer = [n for n in declared.missing if n not in resolved]
     check.copy = declared.copy
+    check.declarative = "alternativa" if (check.conflicts or check.missing_in_offer) else "ok"
     if not check.has_docs and resolved:
         check.has_docs = True
     if check.conflicts or check.missing_in_offer:
