@@ -24,10 +24,10 @@ from src import config as app_config
 from src.config import BASE_DIR, RESOURCE_DIR
 from src.evaluate import confidence as cf
 from src.evaluate.answers import answer_card, answer_medical, answer_offer, open_questions
-from src.evaluate.cards import CARD_FIELDS
 from src.history.db import DEFAULT_DB, connect
 from src.history import sync as answers_sync
 from src.history.review import REASONS
+from src.ui.card_form import CardForm
 
 logger = logging.getLogger("ui")
 
@@ -99,9 +99,6 @@ STATUS_LABELS = {cf.CORESPUNDE: "Corespunde", cf.ALTERNATIVA: "Alternativa", cf.
                  cf.CLARIFICARE: "Clarificare"}
 STATUS_COLORS = {cf.CORESPUNDE: "#00B050", cf.ALTERNATIVA: "#00B0F0", cf.NU_CORESPUNDE: "#FF0000",
                  cf.CLARIFICARE: "#FFFF00"}
-CARD_LABELS = {"producer": "Производитель", "model": "Модель", "codes": "Коды модели", "dm": "Номера DM",
-               "name": "Изделие", "params": "Параметры (JSON)", "compatible_with": "Совместимо с",
-               "iso": "ISO / CE"}
 
 
 class QueueHandler(logging.Handler):
@@ -866,41 +863,21 @@ class App:
         ttk.Button(row, text="Медицинское - нужна регистрация AMDM", command=lambda: save(True)).pack(fill="x", pady=2)
         ttk.Button(row, text="Не медицинское - достаточно ISO/CE", command=lambda: save(False)).pack(fill="x", pady=2)
 
+    def _card_dir(self, tender_id: str) -> Optional[Path]:
+        """Папка тендера вопроса: из поля «Папка тендера», если тот же тендер, иначе downloads/<номер>."""
+        current = Path(self.tender_var.get() or "")
+        if (current / "manifest.sqlite").is_file() and (not tender_id or tender_id in current.name):
+            return current
+        folder = Path(BASE_DIR) / "downloads" / str(tender_id or "")
+        return folder if (folder / "manifest.sqlite").is_file() else None
+
     def _card_form(self, q: Dict):
-        card = dict(q["payload"].get("card") or {"model_key": q["model_key"]})
-        ttk.Label(self.form, text=f"Карточка товара: {q['model_key']}", font=("Segoe UI", 11, "bold")).pack(anchor="w")
-        ttk.Label(self.form, text=f"Из лота {q['payload'].get('lot_no')}, {q['payload'].get('participant')}: "
-                                  f"{q['payload'].get('lot_title', '')}").pack(anchor="w")
-        grid = ttk.Frame(self.form)
-        grid.pack(fill="x", pady=6)
-        entries = {}
-        for i, name in enumerate(CARD_FIELDS):
-            ttk.Label(grid, text=CARD_LABELS[name]).grid(row=i, column=0, sticky="nw", padx=(0, 6))
-            value = card.get(name) or ""
-            if name == "params":
-                value = json.dumps(value, ensure_ascii=False, indent=1) if not isinstance(value, str) else value
-                w = tk.Text(grid, height=6, width=90, font=("Consolas", 9))
-                w.insert("1.0", value)
-            else:
-                w = ttk.Entry(grid, width=90)
-                w.insert(0, str(value))
-            w.grid(row=i, column=1, sticky="we", pady=1)
-            entries[name] = w
-
-        def save():
-            new = {"model_key": card["model_key"]}
-            for name, w in entries.items():
-                new[name] = w.get("1.0", "end").strip() if isinstance(w, tk.Text) else w.get().strip()
-            try:
-                new["params"] = json.loads(new["params"] or "{}")
-            except json.JSONDecodeError:
-                messagebox.showerror("Параметры", "Параметры - JSON: {\"Lungime\": \"12 cm\"}")
-                return
-            answer_card(self.kb, q["id"], new)
-            logger.info(f"[UI] Карточка подтверждена: {card['model_key']}")
+        def save(card: Dict):
+            answer_card(self.kb, q["id"], card)
+            logger.info(f"[UI] Карточка подтверждена: {card['model_key']}"
+                        + (f"; агенты: {card['agents']}" if card.get("agents") else ""))
             self._answered()
-        ttk.Button(self.form, text="Подтвердить карточку", command=save).pack(anchor="e", pady=6)
-
+        self.card_form = CardForm(self.form, self.kb, q, self._card_dir(q.get("tender_id")), save)
 
 def main(argv=None) -> int:
     argv = list(argv or [])

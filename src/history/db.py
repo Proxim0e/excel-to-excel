@@ -134,6 +134,8 @@ CREATE TABLE IF NOT EXISTS products (
     params          TEXT,               -- JSON: параметр -> значение
     compatible_with TEXT,               -- с каким аппаратом совместимо
     iso             TEXT,               -- ISO / CE, если DM нет
+    agents          TEXT,               -- экономические агенты, предлагавшие модель (через «; »)
+    winners         TEXT,               -- победители прошлых лет по модели: «участник (год, тендер)» через «; »
     source          TEXT NOT NULL,      -- human / prefill
     confirmed_at    TEXT,
     updated_at      TEXT NOT NULL
@@ -197,4 +199,18 @@ def connect(path=DEFAULT_DB) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
     conn.executescript(SCHEMA)
+    _migrate(conn)
     return conn
+
+
+# Колонки, добавленные после создания таблиц (старые базы на обоих ПК)
+ADDED_COLUMNS = {"products": (("agents", "TEXT"), ("winners", "TEXT"))}
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    for table, cols in ADDED_COLUMNS.items():
+        have = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+        for name, kind in cols:
+            if name not in have:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {kind}")
+    conn.commit()

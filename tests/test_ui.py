@@ -121,6 +121,65 @@ class AppTests(unittest.TestCase):
             self.assertNotIn("--tender", start.call_args[0][1])            # «да» - по родительскому файлу
             self.assertEqual(self.app.mode, "parent")
 
+    def test_card_form_quick_fill(self):
+        import sqlite3
+        import fitz
+        from unittest import mock
+        from src.ui import card_form
+        # тендер с одним документом участника и требованием лота
+        tdir = Path(self.tmp.name) / "T1"
+        (tdir / "lot").mkdir(parents=True)
+        pdf = tdir / "lot" / "fisa.pdf"
+        doc = fitz.open()
+        doc.new_page().insert_text((72, 72), "Electrod SF01\nDiametru: 40 mm\nImpedanta 10 Hz 120 ohm")
+        doc.save(pdf)
+        doc.close()
+        m = sqlite3.connect(tdir / "manifest.sqlite")
+        m.executescript("CREATE TABLE documents (sha256 TEXT, doc_type TEXT, pages INT, has_text INT);"
+                        "CREATE TABLE document_refs (path TEXT, lot_no INT, participant TEXT, sha256 TEXT);")
+        m.execute("INSERT INTO documents VALUES ('x', 'datasheet', 1, 1)")
+        m.execute("INSERT INTO document_refs VALUES (?, 29, 'Electeh SRL', 'x')", (str(pdf),))
+        m.commit()
+        m.close()
+        kb = connect(self.db)
+        lot = engine.Lot("T1", 29, "lot 29", "Lot nr. 29 Electrod", "1.diametru 38 - 47mm, 2. electrod Ag/AgCl")
+        ev = engine.Evaluation("T1", 29, "Electeh SRL", "DM:DM1", cf.CLARIFICARE, cf.PENDING, 0.3, ["x"],
+                               findings={"card_prefill": {"model_key": "DM:DM1", "producer": "Intco", "model": "SF01",
+                                                          "codes": "SF01", "dm": "DM1", "params": {}}},
+                               ask_card=True)
+        engine.save(kb, ev, lot)
+        kb.commit()
+        kb.close()
+        self.app.tender_var.set(str(tdir))
+        self.app.refresh_questions()
+        self.app.q_list.selection_clear(0, "end")
+        self.app.q_list.selection_set(0)
+        self.app.show_selected()
+        form = self.app.card_form
+        # требование лота: подсказка и строки пунктов требования
+        self.assertIn("diametru", form.requirement)
+        self.assertEqual([i["name"].get() for i in form.param_widgets], ["diametru", "electrod Ag/AgCl"])
+        self.assertEqual(list(form.param_widgets[0]["value"].cget("values")), ["38 - 47mm"])
+        # документ участника открыт, найден код модели
+        self.assertIn("Diametru: 40 mm", form.doc_text.get("1.0", "end"))
+        self.assertEqual(form.search_var.get(), "SF01")
+        self.assertEqual(form.hits_var.get(), "1/1")
+        # выделенный текст -> в пустую строку того же параметра
+        form.add_selection("Diametru: 40 mm")
+        self.assertEqual(form.param_widgets[0]["value"].get(), "40 mm")
+        form.add_selection("Impedanta 10 Hz 120 ohm")
+        self.assertEqual(form.params(), {"diametru": "40 mm", "Impedanta": "10 Hz 120 ohm"})
+        # экономические агенты: текущий участник выбран, можно дописать
+        self.assertEqual(form.selected(form.agent_list), ["Electeh SRL - этот тендер"])
+        form.winner_list.add_entry.insert(0, "Labromed (2025, 21600000)")
+        form.winner_list.add_push()
+        win = form.show_requirement()
+        win.destroy()
+        form.save_button.invoke()
+        row = self.app.kb.execute("SELECT agents, winners, params, source FROM products").fetchone()
+        self.assertEqual(row[:2], ("Electeh SRL", "Labromed (2025, 21600000)"))
+        self.assertEqual(row[3], "human")
+
     def test_medical_type_question_in_window(self):
         from src.evaluate.answers import ask_medical_type, human_types
         kb = connect(self.db)
@@ -151,8 +210,7 @@ class AppTests(unittest.TestCase):
         self.app.show_selected()
         self.assertEqual(self.app.current["kind"], "product_card")
         # подтвердить карточку кнопкой формы
-        button = [w for w in self.app.form.winfo_children() if isinstance(w, tk.ttk.Button)][-1]
-        button.invoke()
+        self.app.card_form.save_button.invoke()
         self.assertEqual(self.app.kb.execute("SELECT source FROM products").fetchone()[0], "human")
         self.app.q_list.selection_set(0)
         self.app.show_selected()

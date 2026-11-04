@@ -25,7 +25,8 @@ from src.config import BASE_DIR
 logger = logging.getLogger(__name__)
 
 ANSWERS_DIR = Path(BASE_DIR) / "knowledge" / "answers"
-PRODUCT_COLS = ("model_key", "producer", "model", "codes", "dm", "name", "params", "compatible_with", "iso")
+PRODUCT_COLS = ("model_key", "producer", "model", "codes", "dm", "name", "params", "compatible_with", "iso",
+                "agents", "winners")
 
 
 def _now() -> str:
