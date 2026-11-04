@@ -361,9 +361,9 @@ def compatibility_targets(required: str, title: str = "") -> List[Tuple[str, Lis
     for m in COMPAT_CUE.finditer(required or ""):
         phrase = m.group("target").strip(" ,:")
         codes = _code_tokens(phrase)
-        # «Drager 120»: число сразу после марки - тоже модель
-        for n in re.findall(r"(?<=[A-Za-zĂÎȘȚÂăîșțâ]\s)\d{2,4}\b", phrase):
-            if n not in codes:
+        # «Drager 120»: число сразу после марки (слово с заглавной) - тоже модель; «de 54 grade» - нет
+        for brand, n in re.findall(r"\b([A-ZĂÎȘȚÂ][\wăîșțâ\-]{2,})\s+(\d{2,4})\b", phrase):
+            if normalize(brand) not in NOT_BRANDS and n not in codes:
                 codes.append(n)
         brands = [w for w in re.findall(r"\b[A-ZĂÎȘȚÂ][\wăîșțâ\-]{2,}", phrase)
                   if normalize(w) not in NOT_BRANDS and not re.search(r"\d", w)]

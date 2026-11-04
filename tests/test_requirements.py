@@ -102,6 +102,9 @@ class DeclarativeTests(unittest.TestCase):
         self.assertEqual(r.status, "alternativa")
         self.assertIn("compatibilitate neindicată", r.missing[0])
         self.assertEqual(check_declarative("Cablu de interconectare pentru Dräger 120, lungime 3 m", req).status, "ok")
+        # 21643233, лот 483: «pentru sterilizarea ... de 54 grade C» - не аппарат
+        self.assertEqual(check_declarative("Rolă hîrtie", "Rolă pentru sterilizarea cu plasmă la temperatura de 54 "
+                                                          "grade C").missing, [])
 
     def test_device_from_lot_title(self):
         title = "Lot nr. 282 Cablu ECG Carescape B450, GE"

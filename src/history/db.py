@@ -120,6 +120,66 @@ CREATE TABLE IF NOT EXISTS events (
     new_value   TEXT,
     detected_at TEXT NOT NULL
 );
+
+-- Оценка новых тендеров (src/evaluate, решение Ivan 04.11.2026)
+
+-- Карточка товара: подтверждённая человеком (source = human) или предзаполненная (prefill)
+CREATE TABLE IF NOT EXISTS products (
+    model_key       TEXT PRIMARY KEY,   -- src/history/cards.py:model_key
+    producer        TEXT,
+    model           TEXT,
+    codes           TEXT,               -- коды модели через запятую
+    dm              TEXT,               -- номера DM через запятую
+    name            TEXT,               -- что это за изделие
+    params          TEXT,               -- JSON: параметр -> значение
+    compatible_with TEXT,               -- с каким аппаратом совместимо
+    iso             TEXT,               -- ISO / CE, если DM нет
+    source          TEXT NOT NULL,      -- human / prefill
+    confirmed_at    TEXT,
+    updated_at      TEXT NOT NULL
+);
+
+-- Запрос лота: с ним сравниваются запросы новых тендеров
+CREATE TABLE IF NOT EXISTS lot_profiles (
+    tender_id   TEXT NOT NULL,
+    lot_no      INTEGER NOT NULL,
+    title       TEXT,
+    requirement TEXT,
+    conditions  TEXT,                   -- JSON: условия запроса (числа, признаки, совместимость)
+    PRIMARY KEY (tender_id, lot_no)
+);
+
+-- Решение по оферте: corespunde / alternativa / nu_corespunde / clarificare / neevaluat
+CREATE TABLE IF NOT EXISTS evaluations (
+    tender_id   TEXT NOT NULL,
+    lot_no      INTEGER NOT NULL,
+    participant TEXT NOT NULL,
+    model_key   TEXT,
+    status      TEXT NOT NULL,
+    reason      TEXT,                   -- код из src/history/review.py:REASONS
+    confidence  REAL,
+    source      TEXT NOT NULL,          -- auto / human / pending (ждёт ответа)
+    findings    TEXT,                   -- JSON: уровни 1-3 и история
+    decided_at  TEXT NOT NULL,
+    PRIMARY KEY (tender_id, lot_no, participant)
+);
+CREATE INDEX IF NOT EXISTS idx_evaluations_model ON evaluations(model_key, status);
+
+-- Очередь вопросов к человеку для окна приложения
+CREATE TABLE IF NOT EXISTS questions (
+    id          INTEGER PRIMARY KEY,
+    kind        TEXT NOT NULL,          -- offer_status / product_card
+    tender_id   TEXT NOT NULL,
+    lot_no      INTEGER,
+    participant TEXT,
+    model_key   TEXT,
+    payload     TEXT NOT NULL,          -- JSON: что показать
+    state       TEXT NOT NULL,          -- open / answered
+    answer      TEXT,                   -- JSON: ответ человека
+    created_at  TEXT NOT NULL,
+    answered_at TEXT,
+    UNIQUE (kind, tender_id, lot_no, participant, model_key)
+);
 """
 
 
