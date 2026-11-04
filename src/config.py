@@ -1,3 +1,4 @@
+import json
 import os
 import re
 from pathlib import Path
@@ -82,3 +83,66 @@ HEADERS: Dict[str, str] = {
     "User-Agent": "Mozilla/5.0 (compatible; scraper/1.0; +https://example.com/bot)"
 }
 
+
+# ---------------------------------------------------------------------------
+# Настройки из окна приложения (кнопка «Настройки»): data/settings.json перекрывает значения выше.
+# Файл свой на каждом ПК (data/ не в git); значения по умолчанию - здесь. Запуск тендера, AMDM и уточнений
+# из окна идёт отдельным процессом, поэтому сохранённое применяется со следующего запуска.
+# ---------------------------------------------------------------------------
+SETTINGS_FILE: Path = BASE_DIR / "data" / "settings.json"
+# имя -> (подпись в окне, тип)
+EDITABLE: Dict[str, Tuple[str, type]] = {
+    "ENABLE_DOWNLOADS": ("Скачивать документы участников", bool),
+    "ONLY_DOWNLOAD": ("Только скачивание (Excel не создавать)", bool),
+    "ALLOWED_EXTENSIONS": ("Расширения файлов через запятую (пусто - все)", list),
+    "SCRAPE_WORKERS": ("Потоков сканирования лотов", int),
+    "SCRAPE_MIN_DELAY": ("Пауза между запросами сканирования, с", float),
+    "DOWNLOAD_WORKERS": ("Потоков скачивания", int),
+    "DOWNLOAD_MIN_DELAY": ("Пауза между скачиваниями, с (сайт отвечает 429)", float),
+    "DOWNLOAD_RETRIES": ("Попыток на запрос", int),
+    "APPEND_TO_EXISTING": ("Дописывать в существующие листы", bool),
+    "PERCENT_THRESHOLD": ("Порог цены, доля базы (1.3 = 130%)", float),
+    "DEFAULT_TENDER_URL": ("Тендер по умолчанию (запуск по родительскому файлу)", str),
+}
+DEFAULTS = {name: globals()[name] for name in EDITABLE}
+
+
+def coerce(name: str, value):
+    """Значение из окна / JSON -> тип настройки; ошибка - ValueError с понятным текстом."""
+    label, kind = EDITABLE[name]
+    if kind is bool:
+        return value if isinstance(value, bool) else str(value).strip().lower() in ("1", "true", "да", "yes", "on")
+    if kind is list:
+        items = value if isinstance(value, list) else str(value).split(",")
+        return [("." + s.strip().lstrip(".")).lower() for s in items if str(s).strip()]
+    try:
+        return kind(str(value).strip().replace(",", ".") if kind is float else str(value).strip())
+    except ValueError:
+        raise ValueError(f"«{label}»: нужно {'число' if kind in (int, float) else 'значение'}, а не «{value}»")
+
+
+def current_settings() -> Dict[str, object]:
+    return {name: globals()[name] for name in EDITABLE}
+
+
+def save_settings(values: Dict[str, object]) -> Path:
+    """Проверяет и сохраняет в SETTINGS_FILE только отличия от значений по умолчанию."""
+    clean = {name: coerce(name, values[name]) for name in EDITABLE if name in values}
+    globals().update(clean)
+    diff = {k: v for k, v in current_settings().items() if v != DEFAULTS[k]}
+    SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    SETTINGS_FILE.write_text(json.dumps(diff, ensure_ascii=False, indent=2), encoding="utf-8")
+    return SETTINGS_FILE
+
+
+def _load_settings_file() -> None:
+    if not SETTINGS_FILE.is_file():
+        return
+    try:
+        data = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+        globals().update({k: coerce(k, v) for k, v in data.items() if k in EDITABLE})
+    except Exception as e:  # битый файл настроек не должен ломать запуск
+        print(f"[config] {SETTINGS_FILE} не прочитан ({e}) - значения по умолчанию")
+
+
+_load_settings_file()

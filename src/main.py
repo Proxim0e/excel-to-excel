@@ -8,7 +8,13 @@ import os
 import shutil
 import threading
 from pathlib import Path
+import sys
 import requests
+
+# Запуск файлом (python src/main.py, PyCharm): корень проекта - в путь импорта, иначе нет пакета src
+_ROOT = str(Path(__file__).resolve().parent.parent)
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
 
 from src.manifest import Manifest, MANIFEST_NAME
 from src.utils.file_helpers import sanitize_filename
@@ -27,13 +33,9 @@ from excel.reader import get_parent_data, get_tender_url_from_parent
 logging.getLogger("urllib3").setLevel(logging.WARNING)
 logging.getLogger("requests").setLevel(logging.WARNING)
 
-# Настройка логирования (вместо простых print)
-logging.basicConfig(
-    level=logging.INFO,
-    format='[%(asctime)s] [%(levelname)s] %(message)s',
-    force=True
-)
-#logging.basicConfig(level=logging.DEBUG, format='%(asctime)s [%(levelname)s] %(message)s')
+# Логирование настраивается при запуске (внизу файла), а не при импорте: basicConfig(force=True) здесь
+# снимал обработчик окна приложения - после «Запустить тендер» лог в окне пропадал.
+LOG_FORMAT = '[%(asctime)s] [%(levelname)s] %(message)s'
 logger = logging.getLogger(__name__)
 
 
@@ -166,7 +168,8 @@ def main(tender: str = None):
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
         future_to_url = {executor.submit(scraper.parse_lot_page, url): url for url in lot_links}
 
-        for future in concurrent.futures.as_completed(future_to_url):
+        total_links = len(future_to_url)
+        for done_links, future in enumerate(concurrent.futures.as_completed(future_to_url), start=1):
             url = future_to_url[future]
             try:
                 lot_data = future.result()
@@ -179,7 +182,8 @@ def main(tender: str = None):
                     raw_title = lot_data.title if lot_data.title else ""
                     display_title = normalize_spaces(prepare_lot_title_for_b1(raw_title))
 
-                    logger.info(f"Обработан   ===   {display_title}   === ---> [{len(lot_data.participants)}] участн.")
+                    logger.info(f"Обработан {done_links}/{total_links} ({100 * done_links / total_links:.0f}%)   ===   "
+                                f"{display_title}   === ---> [{len(lot_data.participants)}] участн.")
             except Exception as e:
                 logger.error(f"Критическая ошибка при обработке {url}: {e}")
 
@@ -666,7 +670,16 @@ def classify_downloads(tender_folder):
 
 if __name__ == "__main__":
     import argparse
-    _ap = argparse.ArgumentParser(description="Скачивание и разбор тендера в result Excel")
+    _ap = argparse.ArgumentParser(description="Без параметров - окно приложения. С --tender или --console - "
+                                              "скачивание и разбор тендера в консоли (так его запускает окно).")
     _ap.add_argument("--tender", help="номер или URL тендера на achizitii.md: лоты из formularele.xlsx заказчика "
                                       "(MTender) вместо родительского файла resources/-*.xlsx")
-    main(_ap.parse_args().tender)
+    _ap.add_argument("--console", action="store_true",
+                     help="без окна; без --tender - по родительскому файлу resources/-*.xlsx")
+    _args = _ap.parse_args()
+    if _args.tender or _args.console:
+        logging.basicConfig(level=logging.INFO, format=LOG_FORMAT, force=True)
+        main(_args.tender)
+    else:
+        from src.ui.app import main as ui_main
+        sys.exit(ui_main([]))

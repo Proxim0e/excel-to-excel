@@ -27,11 +27,11 @@
 
 | Шаг | Команда | Результат |
 |---|---|---|
-| Скачивание, классификация, Anexa 22, заполнение | `python src/main.py` (PyCharm; вне его — `PYTHONPATH=.`) | `resources/result_<дата>.xlsx`, `downloads/<тендер>/manifest.sqlite` |
+| Окно приложения (всё ниже — кнопками) | `python src/main.py` без параметров (или `python -m src.ui`) | этапы, прогресс, лог, вопросы; «Настройки» — `data/settings.json` поверх `src/config.py` |
+| Скачивание, классификация, Anexa 22, заполнение | `python src/main.py --tender <номер>` (без окна; `--console` — по родительскому файлу) | `resources/result_<дата>.xlsx`, `downloads/<тендер>/manifest.sqlite` |
 | Уточнения | `python -m src.clarificari <result.xlsx> downloads/<тендер> --dir downloads/<тендер>/Clarificari --out <копия.xlsx>` | колонки «clarificări (runda N)» |
 | AMDM | `python -m src.amdm check <result.xlsx>` (`--offline` — только локальная копия реестра) | `*_AMDM.xlsx`, лист «Verificare AMDM» |
 | Оценка | `python -m src.evaluate <result.xlsx> downloads/<тендер> [--dry-run] [--online]` | решения и вопросы в `data/knowledge.sqlite` |
-| Окно приложения | `python -m src.ui [<result.xlsx> downloads/<тендер>]` | этап, лог, вопросы и карточки товара |
 | Тесты | `pytest` | |
 
 `downloads/`, `resources/*.xlsx`, `resources/amdm_registry.sqlite`, `data/` — не в git: на другом ПК их нет,
@@ -40,6 +40,8 @@
 ## Правила, о которых договорились
 
 - DM аппарата у его запчасти / аксессуара / комплекта не подходит — нужен ISO на изделие (02.11.2026).
+- Модули не вызывают `logging.basicConfig(force=True)` при импорте — только в `if __name__ == "__main__"`: иначе
+  снимается обработчик окна и лог в окне пропадает (04.11.2026).
 - Писать в Excel только в пустые ячейки; ручные правки человека не перезаписывать.
 - Ветки этапов идут цепочкой `stage2-anexa22` → `stage4-amdm` → `stage5-history`; исправление старого этапа
   делается в его ветке и вливается в `stage5-history`.

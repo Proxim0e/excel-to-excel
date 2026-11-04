@@ -57,6 +57,30 @@ class AppTests(unittest.TestCase):
         self.assertEqual(log_tag("[AMDM] сайт: 1/2 (50%) DM1 → нет в реестре"), "error")
         self.assertEqual(log_tag("[AMDM] lot 3, X: DM1 verde"), "ok")
 
+    def test_import_main_keeps_window_log(self):
+        # src/main.py при импорте вызывал basicConfig(force=True) и снимал обработчик окна - лог пропадал
+        import sys
+        src_dir = str(Path(__file__).resolve().parent.parent / "src")
+        if src_dir not in sys.path:
+            sys.path.insert(0, src_dir)
+        import src.main  # noqa: F401
+        self.assertIn(self.app.handler, logging.getLogger().handlers)
+
+    def test_process_task_streams_log_stage_and_progress(self):
+        code = ("import logging; logging.basicConfig(level=20, format='[%(asctime)s] [%(levelname)s] %(message)s');"
+                "logging.info('[AMDM] сайт: 1/2 (50%) DM1 → найден: X'); logging.warning('медленно')")
+        self.app._start_process("AMDM", ["-c", code])
+        self.app.worker.join(30)
+        self.app._poll_log()
+        log = self.app.log_text.get("1.0", "end")
+        self.assertIn("DM1 → найден", log)
+        self.assertIn("[WARNING] медленно", log)
+        self.assertEqual(self.app.stage, "AMDM")
+        self.app._poll_log()                     # _finished из потока задачи - через очередь окна
+        self.assertEqual(self.app.progress["value"], 100)
+        self.assertIn("✓AMDM", self.app.stages.cget("text"))
+        self.assertIn("готово", self.app.stage_var.get())
+
     def test_question_appears_and_is_answered(self):
         kb = connect(self.db)
         lot = engine.Lot("T1", 29, "lot 29", "Lot nr. 29 Electrod", "Electrod 5 mm")

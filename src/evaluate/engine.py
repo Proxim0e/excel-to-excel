@@ -18,7 +18,7 @@ from src.amdm.models import OfferRegistration
 from src.amdm.workbook import load_workbook_tolerant, read_offers
 from src.anexa22.evaluate import participant_key
 from src.anexa22.evidence import check_offer
-from src.config import PERCENT_THRESHOLD
+from src import config as app_config
 from src.evaluate import confidence as cf
 from src.evaluate.cards import prefill, save_card
 from src.evaluate.history import HistoryInfo, lookup
@@ -124,7 +124,7 @@ def evaluate_participant(lot: Lot, p: Participant, manifest: sqlite3.Connection,
         return Evaluation(lot.tender_id, lot.lot_no, p.name, key, status, source, conf, reasons, code,
                           findings or {}, ask_card)
 
-    if p.ratio is not None and p.ratio >= PERCENT_THRESHOLD:
+    if p.ratio is not None and p.ratio >= app_config.PERCENT_THRESHOLD:
         return result(cf.NU_CORESPUNDE, cf.AUTO, 1.0, [f"цена {p.ratio:.0%} базы (≥ 130%)"], "price_130")
     if not p.offer:
         return result(cf.CLARIFICARE, cf.PENDING, 0.1, ["нет Anexa 22 по этому лоту"])

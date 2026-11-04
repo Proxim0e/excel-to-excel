@@ -6,12 +6,12 @@
 карточка товара с предзаполненными полями. Работа идёт в фоновом потоке; когда появляется вопрос, окно
 выходит на передний план.
 """
-import inspect
 import json
 import logging
 import os
 import queue
 import re
+import subprocess
 import sys
 import threading
 import time
@@ -20,6 +20,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from typing import Dict, List, Optional
 
+from src import config as app_config
 from src.config import BASE_DIR, RESOURCE_DIR
 from src.evaluate import confidence as cf
 from src.evaluate.answers import answer_card, answer_offer, open_questions
@@ -41,12 +42,14 @@ def ensure_tcl() -> None:
 
 ensure_tcl()
 
-STAGES = ["Сканирование лотов", "Excel", "Скачивание", "Классификация", "Anexa 22", "Заполнение", "Оценка",
+STAGES = ["Документы тендера", "Листы Excel", "Сканирование лотов", "Участники в Excel", "Скачивание", "Классификация", "Anexa 22", "Заполнение", "Оценка",
           "AMDM", "Уточнения"]
 # Строка лога -> этап (по меткам, которые модули уже пишут)
 STAGE_MARKS = [
-    (re.compile(r"Сбор ссылок|Обработан\s+===|параллельный парсинг"), "Сканирование лотов"),
-    (re.compile(r"Подготовка структуры Excel|Запись участников"), "Excel"),
+    (re.compile(r"\[TENDER\]|Загружено \d+ лотов"), "Документы тендера"),
+    (re.compile(r"Сбор ссылок|Обработан\s+(?:\d|===)|параллельный парсинг"), "Сканирование лотов"),
+    (re.compile(r"Подготовка структуры Excel|Excel структура готова"), "Листы Excel"),
+    (re.compile(r"Запись участников|ГОТОВО! Файл сохранен|\[EXCEL\]"), "Участники в Excel"),
     (re.compile(r"скачиванию|ПРОГРЕСС|\[SKIP\]|Скачивание"), "Скачивание"),
     (re.compile(r"\[CLASSIFY\]"), "Классификация"),
     (re.compile(r"\[ANEXA22\]"), "Anexa 22"),
@@ -57,7 +60,13 @@ STAGE_MARKS = [
 ]
 # «(46.0%)», «(12%)», «(12/283, 4%)» - процент перед закрывающей скобкой
 PROGRESS_RE = re.compile(r"(\d+(?:\.\d+)?)%\)")
-SILENCE_SECONDS = 30   # столько без новых строк - показываем, что ждём (сайт, большой PDF)
+SILENCE_SECONDS = 30
+MAX_LOG_LINES = 4000   # старые строки уходят: окно не тормозит на тысячах [SKIP] при скачивании
+# Не показывать в окне: подсказки библиотек на каждый документ и строки по отдельным файлам при скачивании
+# (тысячи «[SKIP] Уже на месте»; ход скачивания виден по строкам «ПРОГРЕСС», полный лог - в консоли)
+NOISE = re.compile(r"pymupdf_layout|Consider using the pymupdf|\[(?:SKIP|COPIED)\]")
+# Строка процесса (main.py, amdm, clarificari): «[2026-11-04 09:43:29,561] [INFO] текст» -> «[09:43:29] текст»
+PROCESS_LINE = re.compile(r"^\[\d{4}-\d\d-\d\d (\d\d:\d\d:\d\d)[,.]\d+\]\s*\[(\w+)\]\s?(.*)$")   # столько без новых строк - показываем, что ждём (сайт, большой PDF)
 # Подсветка строк лога: тег -> (шаблон, цвет текста)
 LOG_TAGS = [
     ("error", re.compile(r"ERROR|CRITICAL|ошибк|rosu|nu_corespunde|нет в реестре", re.IGNORECASE), "#C00000"),
@@ -92,9 +101,21 @@ class QueueHandler(logging.Handler):
 
     def emit(self, record):
         try:
-            self.q.put(self.format(record))
+            line = self.format(record)
+            if record.levelno >= logging.WARNING:
+                line = line.replace("] ", f"] [{record.levelname}] ", 1)
+            self.q.put(line)
         except Exception:
             self.handleError(record)
+
+
+def normalize_line(line: str) -> str:
+    """Строка вывода дочернего процесса - в формат лога окна; уровень пишется только для WARNING и выше."""
+    m = PROCESS_LINE.match(line)
+    if not m:
+        return f"[{time.strftime('%H:%M:%S')}] {line}"
+    t, level, msg = m.groups()
+    return f"[{t}] " + ("" if level in ("INFO", "DEBUG") else f"[{level}] ") + msg
 
 
 def stage_of(line: str) -> Optional[str]:
@@ -102,6 +123,12 @@ def stage_of(line: str) -> Optional[str]:
         if rx.search(line):
             return stage
     return None
+
+
+def latest_tender_dir() -> Optional[Path]:
+    """Последняя папка тендера в downloads/ (с manifest.sqlite) - после запуска по родительскому файлу."""
+    dirs = [d for d in (Path(BASE_DIR) / "downloads").glob("*") if (d / "manifest.sqlite").is_file()]
+    return max(dirs, key=lambda d: (d / "manifest.sqlite").stat().st_mtime) if dirs else None
 
 
 def latest_result() -> Optional[Path]:
@@ -115,11 +142,15 @@ class App:
         self.root, self.db = root, Path(db)
         self.kb = connect(self.db)            # соединение окна; у фоновых задач - свои
         self.log_queue: "queue.Queue" = queue.Queue()
+        self.ui_calls: "queue.Queue" = queue.Queue()   # действия с окном из фоновых потоков (Tk - только из главного)
         self.worker: Optional[threading.Thread] = None
         self.stop_flag = threading.Event()
         self.known_questions: set = set()
         self.current: Optional[Dict] = None
         self.questions: List[Dict] = []
+        self.proc: Optional[subprocess.Popen] = None     # тендер / AMDM / уточнения - отдельным процессом
+        self.stage: Optional[str] = None
+        self.done_stages: List[str] = []
 
         root.title("Оценка тендеров - мед. изделия")
         root.geometry("1400x850")
@@ -135,9 +166,8 @@ class App:
         self.tender_var.trace_add("write", lambda *_: self._sync_tender())
         self._sync_tender()
 
-        handler = QueueHandler(self.log_queue)
-        logging.getLogger().addHandler(handler)
-        logging.getLogger().setLevel(logging.INFO)
+        self.handler = QueueHandler(self.log_queue)
+        self._attach_log()
         self.root.after(200, self._poll_log)
         self.root.after(1000, self._poll_questions)
         self.refresh_questions()
@@ -162,6 +192,7 @@ class App:
         ttk.Button(buttons, text="Уточнения", command=self.run_clarifications).pack(fill="x")
         ttk.Button(buttons, text="В Excel", command=self.write_excel).pack(fill="x")
         ttk.Button(buttons, text="Стоп", command=self.stop).pack(fill="x")
+        ttk.Button(buttons, text="Настройки", command=self.open_settings).pack(fill="x", pady=(6, 0))
         top.columnconfigure(1, weight=1)
 
         status = ttk.Frame(self.root, padding=(6, 0))
@@ -182,13 +213,16 @@ class App:
         for tag, _, color in LOG_TAGS:
             self.log_text.tag_configure(tag, foreground=color)
         sy = ttk.Scrollbar(logf, command=self.log_text.yview)
-        self.log_text.configure(yscrollcommand=sy.set)
+        sx = ttk.Scrollbar(logf, orient="horizontal", command=self.log_text.xview)
+        self.log_text.configure(yscrollcommand=sy.set, xscrollcommand=sx.set)
         sy.pack(side="right", fill="y")
+        sx.pack(side="bottom", fill="x")
         self.log_text.pack(fill="both", expand=True)
-        panes.add(logf, weight=1)
+        panes.add(logf, weight=3)
 
-        qf = ttk.Labelframe(panes, text="Вопросы к человеку")
+        qf = self.qf = ttk.Labelframe(panes, text="Вопросы к человеку")
         panes.add(qf, weight=2)
+        self.root.after(100, lambda: panes.sashpos(0, int(self.root.winfo_width() * 0.6)))
         self.q_list = tk.Listbox(qf, width=42, exportselection=False)
         self.q_list.pack(side="left", fill="y")
         self.q_list.bind("<<ListboxSelect>>", lambda e: self.show_selected())
@@ -225,25 +259,103 @@ class App:
         return result, tender
 
     # --- фоновые задачи -------------------------------------------------------------------------------------
-    def _start(self, title: str, target):
+    def _busy(self) -> bool:
         if self.worker and self.worker.is_alive():
-            messagebox.showinfo("Занято", "Предыдущая задача ещё идёт.")
-            return
+            messagebox.showinfo("Занято", "Предыдущая задача ещё идёт. Дождитесь конца или нажмите «Стоп».")
+            return True
+        return False
+
+    def _begin(self, title: str):
         self.stop_flag.clear()
-        self.stage_var.set(title)
-        self.progress["value"] = 0
+        self.stage, self.done_stages = None, []
+        self.stage_var.set(f"{title}: запуск…")
+        self.stages.configure(text=" → ".join(STAGES))
+        self.counts_var.set("")
+        self._animate(True)
         self.task_started = self.last_line_at = time.time()
         self.root.after(1000, self._tick)
+        logger.info(f"=== {title}: старт ===")
+
+    def _start(self, title: str, target):
+        """Задача в фоновом потоке этого процесса (оценка, запись в Excel): лог - через logging."""
+        if self._busy():
+            return
+        self._begin(title)
 
         def run():
+            ok = False
             try:
                 target()
+                ok = True
                 logger.info(f"=== {title}: готово ===")
             except Exception as e:  # ошибка задачи - в лог, окно продолжает работать
                 logger.exception(f"{title}: ошибка {type(e).__name__}: {e}")
+            self.ui_calls.put(lambda: self._finished(title, ok))
 
         self.worker = threading.Thread(target=run, daemon=True)
         self.worker.start()
+
+    def _start_process(self, title: str, args: List[str], on_done=None):
+        """Задача отдельным процессом (python <args>): каждая строка его вывода сразу - в лог окна.
+        Свежие настройки (data/settings.json) применяются при каждом запуске, «Стоп» завершает процесс."""
+        if self._busy():
+            return
+        self._begin(title)
+        cmd = [sys.executable, "-u"] + args
+        env = dict(os.environ, PYTHONPATH=str(BASE_DIR), PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1")
+        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+        def run():
+            ok = False
+            try:
+                self.proc = subprocess.Popen(cmd, cwd=str(BASE_DIR), env=env, stdout=subprocess.PIPE,
+                                             stderr=subprocess.STDOUT, text=True, encoding="utf-8",
+                                             errors="replace", bufsize=1, creationflags=flags)
+                for raw in self.proc.stdout:
+                    if raw.strip() and not NOISE.search(raw):
+                        self.log_queue.put(normalize_line(raw.rstrip()))
+                code = self.proc.wait()
+                if self.stop_flag.is_set():
+                    logger.warning(f"=== {title}: остановлено ===")
+                elif code == 0:
+                    ok = True
+                    if on_done:
+                        on_done()
+                    logger.info(f"=== {title}: готово ===")
+                else:
+                    logger.error(f"=== {title}: процесс завершился с ошибкой (код {code}) - см. строки выше ===")
+            except Exception as e:
+                logger.exception(f"{title}: ошибка запуска {type(e).__name__}: {e}")
+            finally:
+                self.proc = None
+                self.ui_calls.put(lambda: self._finished(title, ok))
+
+        self.worker = threading.Thread(target=run, daemon=True)
+        self.worker.start()
+
+    def _finished(self, title: str, ok: bool):
+        self._animate(False)
+        if ok:
+            self.progress["value"] = 100
+            if self.stage and self.stage not in self.done_stages:
+                self.done_stages.append(self.stage)
+            self._show_stages()
+        self.stage_var.set(f"{title}: {'готово' if ok else 'остановлено / ошибка'}")
+        self.now_var.set("")
+
+    def _animate(self, on: bool):
+        """Этап без процентов в логе - бегущая полоса (задача жива); с процентами - заполнение."""
+        self.progress.stop()
+        if on:
+            self.progress.configure(mode="indeterminate")
+            self.progress.start(15)
+        else:
+            self.progress.configure(mode="determinate")
+
+    def _show_stages(self):
+        self.stages.configure(text=" → ".join(
+            f"[{s}]" if s == self.stage and s not in self.done_stages else (f"✓{s}" if s in self.done_stages else s)
+            for s in STAGES))
 
     def _tick(self):
         """Раз в секунду: сколько идёт задача и не молчит ли она - видно, что окно не зависло."""
@@ -259,24 +371,22 @@ class App:
         self.root.after(1000, self._tick)
 
     def run_tender(self):
-        def task():
-            src_dir = str(Path(BASE_DIR) / "src")
-            if src_dir not in sys.path:
-                sys.path.insert(0, src_dir)   # main.py импортирует модули как из папки src
-            from src import main as main_module
-            tender = self.url_var.get().strip() or None
-            if tender and "tender" in inspect.signature(main_module.main).parameters:
-                main_module.main(tender=tender)
-            else:
-                main_module.main()
+        """Скачивание и разбор тендера: src/main.py --console [--tender <номер|URL>] отдельным процессом."""
+        tender = self.url_var.get().strip()
+        args = [str(Path(BASE_DIR) / "src" / "main.py"), "--console"] + (["--tender", tender] if tender else [])
+        m = re.search(r"tender/(\d+)", tender) or re.fullmatch(r"\s*(\d+)\s*", tender)
+
+        def done():
             result = latest_result()
-            if result:
-                self.root.after(0, lambda: self.result_var.set(str(result)))
-            m = re.search(r"tender/(\d+)", tender or "") or re.fullmatch(r"\s*(\d+)\s*", tender or "")
-            if m:
-                folder = Path(BASE_DIR) / "downloads" / m.group(1)
-                self.root.after(0, lambda: self.tender_var.set(str(folder)))
-        self._start("Тендер", task)
+            folder = Path(BASE_DIR) / "downloads" / m.group(1) if m else latest_tender_dir()
+
+            def show():
+                if result:
+                    self.result_var.set(str(result))
+                if folder:
+                    self.tender_var.set(str(folder))
+            self.ui_calls.put(show)
+        self._start_process("Тендер", args, done)
 
     def run_evaluation(self):
         paths = self._paths()
@@ -294,7 +404,7 @@ class App:
                     done["n"] += 1
                     if self.stop_flag.is_set():
                         raise KeyboardInterrupt("остановлено")
-                    self.root.after(0, lambda n=done["n"]: self._progress(n))
+                    self.ui_calls.put(lambda n=done["n"]: self._progress(n))
 
                 evaluate_tender(result, tender, kb, offline=True, on_lot=on_lot)
                 self._write_excel(result, tender, kb)
@@ -330,13 +440,7 @@ class App:
         if not paths:
             return
         result, _ = paths
-
-        def task():
-            import argparse
-            from src.amdm.__main__ import DEFAULT_DB as AMDM_DB, cmd_check
-            cmd_check(argparse.Namespace(workbook=str(result), db=str(AMDM_DB), offline=False,
-                                         show_browser=False, out=None))
-        self._start("AMDM", task)
+        self._start_process("AMDM", ["-m", "src.amdm", "check", str(result)])
 
     def run_clarifications(self):
         paths = self._paths()
@@ -350,23 +454,34 @@ class App:
                 return
             clar = Path(picked)
 
-        def task():
-            from src.clarificari import recheck_result
-            out = result.with_name(result.stem + "_clarificari.xlsx")
-            stats = recheck_result(result, tender, clar, out_path=out)
-            logger.info(f"Уточнения: {stats}")
-        self._start("Уточнения", task)
+        out = result.with_name(result.stem + "_clarificari.xlsx")
+        self._start_process("Уточнения", ["-m", "src.clarificari", str(result), str(tender), "--dir", str(clar),
+                                          "--out", str(out)])
 
     def stop(self):
         self.stop_flag.set()
-        logger.info("Остановка: текущий лот доделывается, дальше - стоп")
+        proc = self.proc
+        if proc and proc.poll() is None:
+            logger.warning("Остановка: процесс завершается (скачанное сохранено, при повторе пропустится)")
+            proc.terminate()
+        elif self.worker and self.worker.is_alive():
+            logger.info("Остановка: текущий лот доделывается, дальше - стоп")
 
     def _progress(self, lots_done: int):
-        self.progress.configure(mode="indeterminate" if not lots_done else "determinate")
         self.counts_var.set(f"лотов оценено: {lots_done}")
 
     # --- лог и этап -----------------------------------------------------------------------------------------
+    def _attach_log(self):
+        """Обработчик окна - на корневом логгере. Модуль, вызвавший logging.basicConfig(force=True), его
+        снимает - тогда лог в окне пропадал; проверяется при каждом опросе и возвращается."""
+        root = logging.getLogger()
+        if self.handler not in root.handlers:
+            root.addHandler(self.handler)
+        if root.level > logging.INFO or root.level == logging.NOTSET:
+            root.setLevel(logging.INFO)
+
     def _poll_log(self):
+        self._attach_log()
         lines = []
         while True:
             try:
@@ -380,15 +495,80 @@ class App:
             for line in lines:
                 self.log_text.insert("end", line + "\n", log_tag(line) or ())
                 stage = stage_of(line)
-                if stage:
+                if stage and stage != self.stage:
+                    if self.stage and self.stage not in self.done_stages:
+                        self.done_stages.append(self.stage)
+                    self.stage = stage
                     self.stage_var.set(f"Этап: {stage}")
-                    self.stages.configure(text=" → ".join(f"[{s}]" if s == stage else s for s in STAGES))
+                    self._show_stages()
+                    if self.worker and self.worker.is_alive():
+                        self._animate(True)
                 m = PROGRESS_RE.search(line)
                 if m:
-                    self.progress["value"] = float(m.group(1))
+                    if str(self.progress.cget("mode")) != "determinate":
+                        self._animate(False)
+                    self.progress["value"] = min(100.0, float(m.group(1)))
+            extra = int(self.log_text.index("end-1c").split(".")[0]) - MAX_LOG_LINES
+            if extra > 0:
+                self.log_text.delete("1.0", f"{extra + 1}.0")
             self.log_text.configure(state="disabled")
             self.log_text.see("end")
+        while True:
+            try:
+                self.ui_calls.get_nowait()()
+            except queue.Empty:
+                break
         self.root.after(200, self._poll_log)
+
+    # --- настройки ------------------------------------------------------------------------------------------
+    def open_settings(self):
+        """config.py + data/settings.json: правка в окне; сохраняются только отличия от значений по умолчанию."""
+        win = tk.Toplevel(self.root)
+        win.title("Настройки")
+        win.transient(self.root)
+        frame = ttk.Frame(win, padding=10)
+        frame.pack(fill="both", expand=True)
+        current = app_config.current_settings()
+        fields = {}
+
+        def shown(value):
+            return ", ".join(value) if isinstance(value, list) else str(value)
+
+        for i, (name, (label, kind)) in enumerate(app_config.EDITABLE.items()):
+            ttk.Label(frame, text=label).grid(row=i, column=0, sticky="w", padx=(0, 8), pady=2)
+            if kind is bool:
+                var = tk.BooleanVar(value=bool(current[name]))
+                ttk.Checkbutton(frame, variable=var).grid(row=i, column=1, sticky="w")
+            else:
+                var = tk.StringVar(value=shown(current[name]))
+                ttk.Entry(frame, textvariable=var, width=60 if kind is str else 20).grid(row=i, column=1, sticky="w")
+            ttk.Label(frame, text=f"по умолчанию: {shown(app_config.DEFAULTS[name])}",
+                      foreground="#777").grid(row=i, column=2, sticky="w", padx=8)
+            fields[name] = var
+        n = len(fields)
+        ttk.Label(frame, text=f"Файл: {app_config.SETTINGS_FILE}\nТендер, AMDM и уточнения читают настройки при "
+                              f"каждом запуске; порог цены для «Оценки» применяется сразу.",
+                  foreground="#555").grid(row=n, column=0, columnspan=3, sticky="w", pady=(8, 4))
+
+        def save():
+            try:
+                path = app_config.save_settings({k: v.get() for k, v in fields.items()})
+            except ValueError as e:
+                messagebox.showerror("Настройки", str(e), parent=win)
+                return
+            logger.info(f"[UI] Настройки сохранены: {path}")
+            win.destroy()
+
+        def reset():
+            for name, var in fields.items():
+                default = app_config.DEFAULTS[name]
+                var.set(default if isinstance(var, tk.BooleanVar) else shown(default))
+
+        row = ttk.Frame(frame)
+        row.grid(row=n + 1, column=0, columnspan=3, sticky="e")
+        ttk.Button(row, text="По умолчанию", command=reset).pack(side="left", padx=4)
+        ttk.Button(row, text="Отмена", command=win.destroy).pack(side="left", padx=4)
+        ttk.Button(row, text="Сохранить", command=save).pack(side="left", padx=4)
 
     # --- вопросы --------------------------------------------------------------------------------------------
     def _poll_questions(self):
@@ -416,7 +596,7 @@ class App:
             if q["id"] == selected:
                 self.q_list.selection_set(i)
         cards = sum(q["kind"] == "product_card" for q in self.questions)
-        self.counts_var.set(f"открыто вопросов: {len(self.questions)} (карточек: {cards})")
+        self.qf.configure(text=f"Вопросы к человеку - открыто {len(self.questions)} (карточек: {cards})")
         if self.questions and not self.current:
             self.q_list.selection_set(0)
             self.show_selected()
