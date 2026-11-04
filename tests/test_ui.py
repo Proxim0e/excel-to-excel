@@ -24,7 +24,8 @@ class AppTests(unittest.TestCase):
         from src.ui.app import App
         self.tmp = tempfile.TemporaryDirectory()
         self.db = Path(self.tmp.name) / "kb.sqlite"
-        self.root = tk.Tk()
+        from src.ui.app import new_root
+        self.root = new_root()
         self.root.withdraw()
         self.app = App(self.root, db=self.db)
 

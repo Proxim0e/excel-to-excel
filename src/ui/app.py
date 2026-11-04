@@ -42,6 +42,18 @@ def ensure_tcl() -> None:
 
 ensure_tcl()
 
+
+def new_root(attempts: int = 3) -> tk.Tk:
+    """tk.Tk() с повтором: в .venv на Windows Tcl изредка не дочитывает свои файлы («Can't find a usable
+    tk.tcl») - со второй попытки окно создаётся."""
+    for i in range(attempts):
+        try:
+            return tk.Tk()
+        except tk.TclError:
+            if i == attempts - 1:
+                raise
+            time.sleep(0.3)
+
 STAGES = ["Документы тендера", "Листы Excel", "Сканирование лотов", "Участники в Excel", "Скачивание", "Классификация", "Anexa 22", "Заполнение", "Оценка",
           "AMDM", "Уточнения"]
 # Строка лога -> этап (по меткам, которые модули уже пишут)
@@ -750,7 +762,7 @@ def main(argv=None) -> int:
     argv = list(argv or [])
     result = Path(argv[0]) if len(argv) > 0 else None
     tender = Path(argv[1]) if len(argv) > 1 else None
-    root = tk.Tk()
+    root = new_root()
     App(root, result, tender)
     root.mainloop()
     return 0
