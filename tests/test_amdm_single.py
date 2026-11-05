@@ -121,5 +121,54 @@ class SingleCheckTests(unittest.TestCase):
         self.assertEqual((len(calls), f._browser), (2, "browser"))
 
 
+class CollectRecordsTests(unittest.TestCase):
+    """Проверка всего списка: сбой сайта на одном номере не обрывает остальные."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.cache = RegistryCache(Path(self.tmp.name) / "amdm.sqlite")
+
+    def tearDown(self):
+        self.cache.close()
+        self.tmp.cleanup()
+
+    def run_with(self, fetcher, numbers):
+        from src.amdm.__main__ import collect_records
+        with mock.patch("src.amdm.fetch.PlaywrightFetcher", lambda headless=True: fetcher):
+            return collect_records(self.cache, numbers, offline=False, headless=True)
+
+    def test_one_timeout_skips_number_and_retries_it(self):
+        fetcher = FlakyFetcher({"DM1": RECORD, "DM2": RECORD, "DM3": None}, fail_once={"DM2"})
+        records, checked = self.run_with(fetcher, {"DM1", "DM2", "DM3"})
+        self.assertEqual(fetcher.asked, ["DM1", "DM2", "DM3", "DM2"])   # DM2 - ещё раз в конце
+        self.assertEqual(fetcher.reloads, 1)
+        self.assertEqual(checked, {"DM1", "DM2", "DM3"})
+        self.assertIsNotNone(records["DM2"])
+
+    def test_site_down_stops_after_failures_in_row(self):
+        from src.amdm import __main__ as cli
+        numbers = {f"DM{i}" for i in range(10)}
+        fetcher = FlakyFetcher({}, fail_always=True)
+        records, checked = self.run_with(fetcher, numbers)
+        self.assertEqual(len(fetcher.asked), cli.MAX_FAILURES_IN_ROW)   # без повтора и без ожидания по всем
+        self.assertEqual((records, checked), ({}, set()))
+
+
+class FlakyFetcher(FakeFetcher):
+    def __init__(self, records, fail_once=(), fail_always=False):
+        super().__init__(records)
+        self.fail_once, self.fail_always, self.reloads = set(fail_once), fail_always, 0
+
+    def lookup(self, dm):
+        self.asked.append(dm)
+        if self.fail_always or dm in self.fail_once:
+            self.fail_once.discard(dm)
+            raise RuntimeError("Locator.click: Timeout 30000ms exceeded.")
+        return self.records.get(dm)
+
+    def reload(self):
+        self.reloads += 1
+
+
 if __name__ == "__main__":
     unittest.main()

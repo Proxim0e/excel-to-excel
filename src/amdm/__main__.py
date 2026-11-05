@@ -54,23 +54,58 @@ def collect_records(cache: RegistryCache, numbers, offline: bool, headless: bool
         from src.amdm.fetch import PlaywrightFetcher
         try:
             with PlaywrightFetcher(headless=headless) as fetcher:
-                for i, dm in enumerate(to_fetch, start=1):
-                    rec = fetcher.lookup(dm)
-                    site_checked.add(dm)
-                    if rec:
-                        cache.put(rec, source="site")
-                    else:
-                        cache.mark_not_found(dm)
-                    records[dm] = rec
-                    found = (f"найден: {rec.producer or '—'}; {rec.model or rec.catalog or rec.name or '—'}"
-                             if rec else "нет в реестре")
-                    logger.info(f"[AMDM] сайт: {i}/{len(to_fetch)} ({100 * i / len(to_fetch):.0f}%) {dm} → {found}")
+                failed, aborted = _lookup_all(fetcher, cache, to_fetch, records, site_checked)
+                if failed and not aborted:
+                    logger.info(f"[AMDM] Повторяю номера со сбоем: {len(failed)}")
+                    failed, aborted = _lookup_all(fetcher, cache, failed, records, site_checked, "повтор ")
+                if failed:
+                    logger.error(f"[AMDM] Сайт так и не ответил по {len(failed)} номерам: {', '.join(failed)} - "
+                                 f"они «neverificat», запустите проверку ещё раз")
         except ImportError:
             logger.error("Не установлен playwright: pip install playwright && playwright install chromium. "
                          "Продолжаю только по локальной копии.")
         except Exception as e:
             logger.error(f"Поиск на сайте прерван: {e}. Найденное сохранено, остальное — «neverificat».")
     return records, site_checked
+
+
+MAX_FAILURES_IN_ROW = 5     # столько сбоев подряд - сайт лежит, дальше не ждём по 30 с на номер
+
+
+def _lookup_all(fetcher, cache: RegistryCache, dms, records, site_checked, label: str = ""):
+    """Номера по одному; сбой на номере (таймаут клика и т.п.) не обрывает остальные: номер пропускается,
+    страница реестра перезагружается. Возвращает (номера со сбоем, остановлено ли из-за сбоев подряд)."""
+    failed, in_row = [], 0
+    for i, dm in enumerate(dms, start=1):
+        progress = f"[AMDM] сайт: {label}{i}/{len(dms)} ({100 * i / len(dms):.0f}%) {dm}"
+        try:
+            rec = fetcher.lookup(dm)
+        except Exception as e:
+            failed.append(dm)
+            in_row += 1
+            logger.warning(f"{progress} - ошибка: {(str(e).splitlines() or [type(e).__name__])[0][:120]}; пропускаю")
+            if in_row >= MAX_FAILURES_IN_ROW:
+                rest = list(dms[i:])
+                failed.extend(rest)
+                logger.error(f"[AMDM] {in_row} сбоев подряд - сайт реестра не отвечает, "
+                             f"остальные {len(rest)} номеров не проверяю")
+                return failed, True
+            try:
+                fetcher.reload()
+            except Exception as e2:
+                logger.warning(f"[AMDM] Страница реестра не перезагрузилась: {(str(e2).splitlines() or [type(e2).__name__])[0][:120]}")
+            continue
+        in_row = 0
+        site_checked.add(dm)
+        if rec:
+            cache.put(rec, source="site")
+        else:
+            cache.mark_not_found(dm)
+        records[dm] = rec
+        found = (f"найден: {rec.producer or '—'}; {rec.model or rec.catalog or rec.name or '—'}"
+                 if rec else "нет в реестре")
+        logger.info(f"{progress} → {found}")
+    return failed, False
 
 
 def collect_by_name(cache: RegistryCache, codes, offline: bool, headless: bool) -> dict:
