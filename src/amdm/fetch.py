@@ -118,12 +118,30 @@ class PlaywrightFetcher:
         self._pw = self._browser = self._page = None
         self._columns: List[Optional[str]] = []
 
-    def __enter__(self):
+    LAUNCH_ATTEMPTS = 3
+
+    def _launch(self):
+        """Запуск браузера с повтором: когда одновременно стартуют два браузера (кнопка «AMDM ⟳» во время проверки
+        всего списка), драйвер Playwright иногда падает - «Connection closed while reading from the driver»."""
         from playwright.sync_api import sync_playwright
+        for attempt in range(1, self.LAUNCH_ATTEMPTS + 1):
+            try:
+                self._pw = sync_playwright().start()
+                self._browser = self._pw.chromium.launch(headless=self.headless)
+                return
+            except Exception as e:
+                self.__exit__()
+                self._pw = self._browser = None
+                if attempt == self.LAUNCH_ATTEMPTS:
+                    raise
+                logger.warning(f"[AMDM] Браузер не запустился ({str(e).splitlines()[0][:100]}) - "
+                               f"попытка {attempt + 1} из {self.LAUNCH_ATTEMPTS}")
+                time.sleep(2 * attempt)
+
+    def __enter__(self):
         started = time.time()
         logger.info("[AMDM] Запуск браузера…")
-        self._pw = sync_playwright().start()
-        self._browser = self._pw.chromium.launch(headless=self.headless)
+        self._launch()
         self._page = self._browser.new_page()
         logger.info(f"[AMDM] Открываю реестр {REGISTRY_URL} (до 60 с)…")
         self._page.goto(REGISTRY_URL, wait_until="networkidle", timeout=60000)

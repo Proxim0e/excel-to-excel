@@ -115,9 +115,8 @@ class AppTests(unittest.TestCase):
         self.assertEqual(tab.offer.name, "Beta SA")
         label = tab.strip.amdm_labels[1]
         self.assertIn("проверяю", label.cget("text"))
-        for t in tab._amdm_threads:
-            t.join(5)
-        for _ in range(20):                                      # дождаться опроса потока в окне
+        tab.amdm_checker.idle = 0.1
+        for _ in range(100):                                     # дождаться очереди проверок и опроса окна
             self.root.update()
             if "проверяю" not in label.cget("text"):
                 break

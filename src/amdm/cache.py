@@ -67,6 +67,11 @@ class RegistryCache:
         row = self.db.execute(f"SELECT {cols} FROM amdm_record WHERE dm = ?", (dm,)).fetchone()
         return RegistryRecord(**dict(zip(FIELDS, row))) if row else None
 
+    def fetched_from_site(self, dm: str) -> Optional[str]:
+        """Когда запись пришла с сайта (ISO), None - не с сайта или нет записи."""
+        row = self.db.execute("SELECT fetched_at FROM amdm_record WHERE dm = ? AND source = 'site'", (dm,)).fetchone()
+        return row[0] if row else None
+
     def put(self, record: RegistryRecord, source: str) -> None:
         values = [getattr(record, f) for f in FIELDS]
         cols = ", ".join(f'"{f}"' for f in FIELDS)

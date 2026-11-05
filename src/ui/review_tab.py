@@ -297,31 +297,32 @@ class ReviewTab:
         """Проверить номер DM участника на сайте реестра AMDM (в фоне); итог - строкой под DM и в сообщении."""
         if not self.lot or not (0 <= index < len(self.lot.offers)):
             return
-        from src.amdm.single import check_single, offer_registration
+        from src.amdm.single import Checker, offer_registration
         lot, o = self.lot, self.lot.offers[index]
         self._offer_selected(index)
         reg = offer_registration(o.name, o.producer, o.dm, lot.title, lot.sheet, o.col)
         key = (lot.lot_no, o.col)
+        if getattr(self, "amdm_checker", None) is None:          # одна очередь и один браузер на все нажатия
+            if self.amdm_db is None:
+                from src.amdm.__main__ import DEFAULT_DB
+                db = Path(DEFAULT_DB)
+            else:
+                db = self.amdm_db
+            self.amdm_checker = Checker(db, offline=self.amdm_offline)
+        queued = self.amdm_checker.pending()
         what = ", ".join(reg.dm_numbers) or "по коду модели"
-        self.strip.set_amdm(lot.lot_no, o.col, None, f"AMDM: проверяю {what} на сайте реестра…")
-        if self.amdm_db is None:
-            from src.amdm.__main__ import DEFAULT_DB
-            db = Path(DEFAULT_DB)
-        else:
-            db = self.amdm_db
+        self.strip.set_amdm(lot.lot_no, o.col, None, f"AMDM: проверяю {what} на сайте реестра…"
+                            + (f" (в очереди: {queued})" if queued else ""))
         done: Dict = {}
+        finished = threading.Event()
 
-        def work():
-            try:
-                done["results"] = check_single(reg, db, offline=self.amdm_offline)
-            except Exception as e:
-                done["error"] = e
-        t = threading.Thread(target=work, daemon=True)
-        t.start()
-        self._amdm_threads = getattr(self, "_amdm_threads", []) + [t]
+        def callback(result):
+            done["error" if isinstance(result, Exception) else "results"] = result
+            finished.set()
+        self.amdm_checker.submit(reg, callback)
 
         def poll():
-            if t.is_alive():
+            if not finished.is_set():
                 self.lots.after(300, poll)
                 return
             self._amdm_done(key, done)
