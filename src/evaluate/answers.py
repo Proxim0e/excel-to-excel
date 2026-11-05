@@ -20,8 +20,39 @@ def _now() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
 
+SUPERSEDED = "superseded"       # вопрос закрыт без ответа: есть более новый такой же или ответ уже есть
+
+
+def tidy_questions(kb: sqlite3.Connection) -> int:
+    """Убирает дубли и уже решённые вопросы (state = superseded):
+    - по оферте (тендер, лот, участник) - открытым остаётся самый новый (старые ключи модели DM: / M: и т.п.);
+    - по карточке модели - один на модель для всех тендеров (самый новый);
+    - карточка уже подтверждена человеком / по оферте уже есть решение человека.
+    Возвращает число закрытых вопросов."""
+    sqls = [
+        "UPDATE questions SET state = ?, answered_at = ? WHERE state = 'open' AND kind = 'offer_status' AND EXISTS ("
+        "SELECT 1 FROM questions q WHERE q.state = 'open' AND q.kind = 'offer_status' AND q.id > questions.id "
+        "AND q.tender_id = questions.tender_id AND q.lot_no = questions.lot_no "
+        "AND q.participant = questions.participant)",
+        "UPDATE questions SET state = ?, answered_at = ? WHERE state = 'open' AND kind = 'product_card' AND EXISTS ("
+        "SELECT 1 FROM questions q WHERE q.state = 'open' AND q.kind = 'product_card' AND q.id > questions.id "
+        "AND q.model_key = questions.model_key)",
+        "UPDATE questions SET state = ?, answered_at = ? WHERE state = 'open' AND kind = 'product_card' AND EXISTS ("
+        "SELECT 1 FROM products p WHERE p.model_key = questions.model_key AND p.source = 'human')",
+        "UPDATE questions SET state = ?, answered_at = ? WHERE state = 'open' AND kind = 'offer_status' AND EXISTS ("
+        "SELECT 1 FROM evaluations e WHERE e.tender_id = questions.tender_id AND e.lot_no = questions.lot_no "
+        "AND e.participant = questions.participant AND e.source = 'human')",
+    ]
+    closed = 0
+    now = _now()
+    for sql in sqls:
+        closed += kb.execute(sql, (SUPERSEDED, now)).rowcount
+    kb.commit()
+    return closed
+
+
 def open_questions(kb: sqlite3.Connection, tender_id: Optional[str] = None) -> List[Dict]:
-    sql = "SELECT id, kind, tender_id, lot_no, participant, model_key, payload FROM questions WHERE state = 'open'"
+    sql ="SELECT id, kind, tender_id, lot_no, participant, model_key, payload FROM questions WHERE state = 'open'"
     params = ()
     if tender_id:
         sql += " AND tender_id = ?"
@@ -43,11 +74,13 @@ def answer_offer(kb: sqlite3.Connection, question_id: int, status: str, reason: 
     kb.execute("UPDATE evaluations SET status = ?, reason = ?, source = ?, confidence = 1, decided_at = ? "
                "WHERE tender_id = ? AND lot_no = ? AND participant = ?", (status, reason, HUMAN, _now(), *q))
     _close(kb, question_id, {"status": status, "reason": reason, "comment": comment})
+    tidy_questions(kb)
 
 
 def answer_card(kb: sqlite3.Connection, question_id: int, card: Dict) -> None:
     save_card(kb, card, source="human")
     _close(kb, question_id, {"card": card})
+    tidy_questions(kb)          # вопросы по этой модели из других тендеров больше не нужны
 
 
 def human_types(kb: sqlite3.Connection) -> Dict[str, bool]:

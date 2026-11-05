@@ -20,6 +20,7 @@ from src.anexa22.evaluate import participant_key
 from src.anexa22.evidence import check_offer
 from src import config as app_config
 from src.evaluate import confidence as cf
+from src.evaluate.answers import SUPERSEDED
 from src.evaluate.cards import prefill, save_card
 from src.evaluate.history import HistoryInfo, lookup, resolve_key
 from src.excel.fill_offers import FIRST_PARTICIPANT_COL, ROW_NAME, ROW_SPEC, ROW_VALUE, load_offers
@@ -221,12 +222,20 @@ def save(kb: sqlite3.Connection, ev: Evaluation, lot: Lot) -> Optional[str]:
     if ev.source == cf.PENDING:
         payload = {"lot_title": lot.title, "requirement": lot.requirement, "suggested": ev.status,
                    "confidence": ev.confidence, "reasons": ev.reasons, "findings": ev.findings}
+        # один открытый вопрос на оферту: вопрос под прежним ключом модели закрывается
+        kb.execute("UPDATE questions SET state = ?, answered_at = ? WHERE kind = 'offer_status' AND state = 'open' "
+                   "AND tender_id = ? AND lot_no = ? AND participant = ? AND model_key != ?",
+                   (SUPERSEDED, _now(), ev.tender_id, ev.lot_no, ev.participant, ev.model_key or ""))
         cur = kb.execute("INSERT OR IGNORE INTO questions (kind, tender_id, lot_no, participant, model_key, payload, "
                          "state, created_at) VALUES ('offer_status', ?, ?, ?, ?, ?, 'open', ?)",
                          (ev.tender_id, ev.lot_no, ev.participant, ev.model_key or "",
                           json.dumps(payload, ensure_ascii=False, default=str), _now()))
         created = "offer_status" if cur.rowcount else None
-        if ev.ask_card and ev.model_key:
+        asked_card = ev.model_key and kb.execute(
+            "SELECT 1 FROM questions WHERE kind = 'product_card' AND state = 'open' AND model_key = ? "
+            "UNION SELECT 1 FROM products WHERE model_key = ? AND source = 'human'",
+            (ev.model_key, ev.model_key)).fetchone()
+        if ev.ask_card and ev.model_key and not asked_card:     # карточка - один вопрос на модель на все тендеры
             card = ev.findings.get("card_prefill") or {"model_key": ev.model_key}
             save_card(kb, card, source="prefill")
             card_payload = {"lot_no": ev.lot_no, "participant": ev.participant, "lot_title": lot.title,

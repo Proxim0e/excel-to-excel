@@ -23,7 +23,7 @@ from typing import Dict, List, Optional
 from src import config as app_config
 from src.config import BASE_DIR, RESOURCE_DIR
 from src.evaluate import confidence as cf
-from src.evaluate.answers import answer_card, answer_medical, answer_offer, open_questions
+from src.evaluate.answers import answer_card, answer_medical, answer_offer, open_questions, tidy_questions
 from src.history.cards import card_title
 from src.history.db import DEFAULT_DB, connect
 from src.history import sync as answers_sync
@@ -186,7 +186,9 @@ class App:
         self.stop_flag = threading.Event()
         self.known_questions: set = set()
         self.current: Optional[Dict] = None
-        self.questions: List[Dict] = []
+        self.questions: List[Dict] = []          # показанные (с учётом поиска)
+        self.all_questions: List[Dict] = []      # все открытые
+        self._tidied = False
         self.proc: Optional[subprocess.Popen] = None     # тендер / AMDM / уточнения - отдельным процессом
         self.stage: Optional[str] = None
         self.done_stages: List[str] = []
@@ -387,9 +389,23 @@ class App:
         panes.add(qf, weight=3)
         qpanes = self.layout.pane("questions", ttk.Panedwindow(qf, orient="horizontal"), [0.22])
         qpanes.pack(fill="both", expand=True)
-        self.q_list = tk.Listbox(qpanes, width=30, exportselection=False)
+        qleft = ttk.Frame(qpanes)
+        qsearch = ttk.Frame(qleft)
+        qsearch.pack(fill="x")
+        ttk.Label(qsearch, text="Поиск:").pack(side="left")
+        self.q_search = tk.StringVar()
+        self.q_search.trace_add("write", lambda *a: self.refresh_questions(force=True))
+        ttk.Entry(qsearch, textvariable=self.q_search).pack(side="left", fill="x", expand=True, padx=(4, 0))
+        ttk.Button(qsearch, text="×", width=2, command=lambda: self.q_search.set("")).pack(side="left")
+        qbox = ttk.Frame(qleft)
+        qbox.pack(fill="both", expand=True)
+        self.q_list = tk.Listbox(qbox, width=30, exportselection=False)
+        qsy = ttk.Scrollbar(qbox, orient="vertical", command=self.q_list.yview)
+        self.q_list.configure(yscrollcommand=qsy.set)
+        qsy.pack(side="right", fill="y")
+        self.q_list.pack(fill="both", expand=True)
         self.q_list.bind("<<ListboxSelect>>", lambda e: self.show_selected())
-        qpanes.add(self.q_list, weight=1)
+        qpanes.add(qleft, weight=1)
         self.form = ttk.Frame(qpanes, padding=6)
         qpanes.add(self.form, weight=4)
 
@@ -782,28 +798,56 @@ class App:
             self.popup()
         self.root.after(1500, self._poll_questions)
 
-    def refresh_questions(self) -> int:
-        """Обновляет список; возвращает число новых вопросов."""
-        self.questions = open_questions(self.kb)
-        ids = {q["id"] for q in self.questions}
+    @staticmethod
+    def question_text(q: Dict) -> str:
+        if q["kind"] == "product_card":
+            return "Карточка: " + card_title(q["payload"].get("card") or {"model_key": q["model_key"]})
+        if q["kind"] == "medical_type":
+            return f"Мед. изделие? «{q['model_key']}»"
+        return f"Лот {q['lot_no']}: {q['participant']}"
+
+    @staticmethod
+    def question_haystack(q: Dict) -> str:
+        """Где ищет поиск: текст строки списка, ключ модели, тендер, название лота."""
+        p = q["payload"]
+        return " ".join(str(x) for x in (App.question_text(q), q.get("model_key"), q.get("tender_id"),
+                                         q.get("participant"), p.get("lot_title"), (p.get("card") or {}).get("name"),
+                                         (p.get("card") or {}).get("dm"))).lower()
+
+    def refresh_questions(self, force: bool = False) -> int:
+        """Обновляет список (перерисовка - только если вопросы или поиск изменились, чтобы не сбивать прокрутку);
+        возвращает число новых вопросов."""
+        if not self._tidied:                  # дубли, оставшиеся с прежних запусков / другого ПК
+            self._tidied = True
+            closed = tidy_questions(self.kb)
+            if closed:
+                logger.info(f"[UI] Убрано дублирующихся / уже решённых вопросов: {closed}")
+        questions = open_questions(self.kb)
+        ids = {q["id"] for q in questions}
         new = len(ids - self.known_questions)
         self.known_questions |= ids
+        if not force and [q["id"] for q in questions] == [q["id"] for q in self.all_questions]:
+            return new
+        self.all_questions = questions
+        words = self.q_search.get().lower().split()
+        self.questions = [q for q in questions if all(w in self.question_haystack(q) for w in words)]
         selected = self.current["id"] if self.current else None
+        top = self.q_list.yview()[0]
         self.q_list.delete(0, "end")
         for i, q in enumerate(self.questions):
-            if q["kind"] == "product_card":
-                text = "Карточка: " + card_title(q["payload"].get("card") or {"model_key": q["model_key"]})
-            elif q["kind"] == "medical_type":
-                text = f"Мед. изделие? «{q['model_key']}»"
-            else:
-                text = f"Лот {q['lot_no']}: {q['participant']}"
-            self.q_list.insert("end", text)
+            self.q_list.insert("end", self.question_text(q))
             if q["kind"] == "offer_status":
                 self.q_list.itemconfig(i, background=STATUS_COLORS.get(q["payload"].get("suggested"), "white"))
             if q["id"] == selected:
                 self.q_list.selection_set(i)
-        cards = sum(q["kind"] == "product_card" for q in self.questions)
-        self.qf.configure(text=f"Вопросы к человеку - открыто {len(self.questions)} (карточек: {cards})")
+        self.q_list.yview_moveto(top)
+        cards = sum(q["kind"] == "product_card" for q in questions)
+        found = f", найдено: {len(self.questions)}" if words else ""
+        self.qf.configure(text=f"Вопросы к человеку - открыто {len(questions)} (карточек: {cards}){found}")
+        if self.current and self.current["id"] not in ids:     # закрыт в другом месте (вкладка карточек и т.п.)
+            self.current = None
+            for w in self.form.winfo_children():
+                w.destroy()
         if self.questions and not self.current:
             self.q_list.selection_set(0)
             self.show_selected()

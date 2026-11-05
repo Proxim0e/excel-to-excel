@@ -16,6 +16,7 @@ except Exception:  # нет дисплея - тесты окна пропуск�
 
 from src.evaluate import confidence as cf
 from src.evaluate import engine
+from src.evaluate.answers import answer_card
 from src.history.db import connect
 
 
@@ -301,6 +302,36 @@ class AppTests(unittest.TestCase):
         self.assertEqual(self.app.kb.execute("SELECT status, source FROM evaluations").fetchone(),
                          ("clarificare", "human"))
         self.assertEqual(self.app.questions, [])
+
+    def test_question_search_and_card_closed_elsewhere(self):
+        kb = connect(self.db)
+        for n, (participant, key, producer) in enumerate((("Electeh SRL", "P:fiab|f1", "Fiab"),
+                                                          ("Dita", "P:intco|s2", "Intco")), start=1):
+            lot = engine.Lot("T1", n, f"lot {n}", f"Lot nr. {n}", "x")
+            engine.save(kb, engine.Evaluation("T1", n, participant, key, cf.CLARIFICARE, cf.PENDING, 0.3, ["x"],
+                                              findings={"card_prefill": {"model_key": key, "producer": producer}},
+                                              ask_card=True), lot)
+        kb.close()
+        self.app.refresh_questions()
+        self.assertEqual(len(self.app.questions), 4)
+        self.app.q_search.set("intco")
+        self.assertEqual([self.app.q_list.get(i) for i in range(self.app.q_list.size())],
+                         ["Карточка: Intco", "Лот 2: Dita"])                # и карточка, и оферта этой модели
+        self.assertIn("найдено: 2", self.app.qf.cget("text"))
+        self.app.q_search.set("fiab карточка")                          # несколько слов - все должны быть
+        self.assertEqual(self.app.q_list.get(0, "end"), ("Карточка: Fiab",))
+        self.app.q_search.set("dita")                                   # по участнику - вопрос по оферте
+        self.assertEqual(self.app.q_list.get(0), "Лот 2: Dita")
+        self.app.q_search.set("")
+        # карточку подтвердили на вкладке «База карточек» - вопрос пропадает при следующем опросе
+        self.app.q_list.selection_clear(0, "end")
+        self.app.q_list.selection_set(0)
+        self.app.show_selected()
+        qid = self.app.current["id"]
+        answer_card(self.app.kb, qid, {"model_key": self.app.current["model_key"], "producer": "Fiab"})
+        self.app.refresh_questions()
+        self.assertNotIn(qid, [q["id"] for q in self.app.questions])
+        self.assertNotEqual(self.app.current["id"], qid)
 
 
 if __name__ == "__main__":
