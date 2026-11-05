@@ -5,6 +5,7 @@
 """
 import logging
 import re
+import threading
 import tkinter as tk
 from pathlib import Path
 from tkinter import messagebox, ttk
@@ -54,6 +55,9 @@ class ReviewTab:
         self.lot: Optional[rv.Lot] = None
         self.offer: Optional[rv.Offer] = None
         self._shown = None
+        self._saver: Optional[threading.Thread] = None   # сохранение книги в фоне (~5 с на 283 листа)
+        self._save_error: Optional[Exception] = None
+        self._save_again = False
         self._build(parent)
         self.reload()
 
@@ -92,7 +96,7 @@ class ReviewTab:
         self.progress_var = tk.StringVar()
         ttk.Label(left, textvariable=self.progress_var).pack(fill="x")
 
-        right = self.layout.pane("review_right", ttk.Panedwindow(panes, orient="vertical"), [0.55])
+        right = self.layout.pane("review_right", ttk.Panedwindow(panes, orient="vertical"), [0.62])
         panes.add(right, weight=4)
         top = ttk.Frame(right, padding=4)
         right.add(top, weight=3)
@@ -115,9 +119,9 @@ class ReviewTab:
                 ("dm", "DM", 110), ("row1", "Строка 1 (Excel)", 170), ("system", "Система", 220),
                 ("clar", "Уточнения", 200))
         tbody = ttk.Frame(top)
-        tbody.pack(fill="both", expand=True)
+        tbody.pack(fill="both", expand=True)     # перепаковывается ниже: решение и сообщение - всегда видны
         self.offers = ttk.Treeview(tbody, columns=[c[0] for c in cols], show="headings", selectmode="browse",
-                                   height=6)
+                                   height=3)
         for col, text, width in cols:
             self.offers.heading(col, text=text)
             self.offers.column(col, width=width, anchor="w", stretch=True)
@@ -130,8 +134,12 @@ class ReviewTab:
         self.offers.pack(fill="both", expand=True)
         self.offers.bind("<<TreeviewSelect>>", lambda e: self._offer_selected())
         self.detail_var = tk.StringVar()      # полностью: причины системы и уточнения выбранного участника
-        ttk.Label(top, textvariable=self.detail_var, foreground="#333", wraplength=1100,
-                  justify="left").pack(fill="x", pady=(2, 0))
+        self.detail_box = tk.Label(top, textvariable=self.detail_var, font=("Segoe UI", 11), fg="#222",
+                                   bg="#fff8dc", wraplength=1100, justify="left", anchor="w", padx=6, pady=4,
+                                   relief="solid", borderwidth=1)
+        self.detail_box.pack(fill="x", pady=(4, 0))
+        # ширина переноса - по ширине панели (сообщение не уходит за край)
+        self.detail_box.bind("<Configure>", lambda e: self.detail_box.configure(wraplength=max(300, e.width - 16)))
 
         dec = ttk.Labelframe(top, text="Решение (кодбук)", padding=4)
         dec.pack(fill="x", pady=(4, 0))
@@ -154,11 +162,15 @@ class ReviewTab:
         btns = ttk.Frame(dec)
         btns.grid(row=3, column=0, columnspan=4, sticky="we", pady=(4, 0))
         ttk.Button(btns, text="Записать решение (Enter)", command=self.apply).pack(side="left")
-        ttk.Button(btns, text="Принять предложения системы по лоту", command=self.accept_system).pack(side="left",
-                                                                                                    padx=6)
+        ttk.Button(btns, text="Принять предложения системы по лоту →", command=self.accept_system).pack(
+            side="left", padx=6)
         self.state_var = tk.StringVar()
         ttk.Label(btns, textvariable=self.state_var, foreground="#555").pack(side="left", padx=6)
+        self.save_var = tk.StringVar()        # состояние записи в Excel
+        ttk.Label(btns, textvariable=self.save_var, foreground="#1565c0").pack(side="right", padx=6)
 
+        tbody.pack_forget()
+        tbody.pack(fill="both", expand=True, before=self.detail_box)
         self.viewer = DocViewer(right)
         right.add(self.viewer.frame, weight=2)
 
@@ -175,7 +187,7 @@ class ReviewTab:
 
     def reload(self):
         result, tender = self._paths()
-        if self.book is not None and self.book.dirty:
+        if self.book is not None:                 # дождаться фоновой записи, дописать остаток
             self.save(quiet=True)
         self.book, self.lot, self.offer = None, None, None
         self.lots.delete(*self.lots.get_children())
@@ -312,6 +324,7 @@ class ReviewTab:
 
     # --- решения -----------------------------------------------------------------------------------------
     def _decide(self, offer: rv.Offer, choice: rv.Choice, comment: str, row1: Optional[str]):
+        self._wait_save()                     # книгу не меняем, пока она пишется на диск
         self.book.decide(self.lot, offer, choice, comment, row1)
         if self.tender_id:
             rv.record(self.app.kb, self.tender_id, self.lot, offer, choice, comment)
@@ -347,18 +360,21 @@ class ReviewTab:
         self._after_decision()
 
     def _after_decision(self):
+        """Решение записано: есть непроверенные участники лота - к следующему из них; лот проверен целиком -
+        сохранить в Excel (в фоне) и перейти к следующему лоту."""
         self.book.set_tab(self.lot)
         self._export()
-        current = self.offers.selection()
-        self.fill_offers()
-        self.fill_lots()
         pending = [str(i) for i, o in enumerate(self.lot.offers)
                    if (o.system or {}).get("source") != cf.HUMAN]
-        nxt = pending[0] if pending else (current[0] if current else None)
-        if nxt is not None:
-            self.offers.selection_set(nxt)
-            self._offer_selected()
-        self.state_var.set("лот проверен - «Следующий лот →»" if self.lot.reviewed else "записано (не сохранено)")
+        if not pending:
+            self.next_lot()
+            return
+        self.fill_offers()
+        self.fill_lots()
+        self.offers.selection_set(pending[0])
+        self.offers.see(pending[0])
+        self._offer_selected()
+        self.state_var.set(f"записано; осталось участников в лоте: {len(pending)}")
 
     def _export(self):
         try:
@@ -368,31 +384,88 @@ class ReviewTab:
             logger.warning(f"[SYNC] Решение сохранено в базе, но не выгружено в файл: {e}")
 
     def next_lot(self):
+        """Сохранить (в фоне) и открыть следующий по номеру лот из видимых в списке (с учётом фильтра)."""
         if not (self.book and self.lot):
             return
+        cur = self.lot.lot_no
         if self.book.dirty:
-            self.save(quiet=True)
-        items = self.lots.get_children()
-        cur = str(self.lot.lot_no)
-        if cur in items and items.index(cur) + 1 < len(items):
-            nxt = items[items.index(cur) + 1]
-            self.lots.selection_set(nxt)
-            self.lots.see(nxt)
+            self.save_async()
+        self.fill_lots()
+        following = [i for i in self.lots.get_children() if int(i) > cur]
+        if not following:
+            self.fill_offers()
+            self.state_var.set("это последний лот в списке")
+            return
+        nxt = following[0]
+        self.lots.selection_set(nxt)
+        self.lots.see(nxt)
+        self.show_lot(self.book.lot(int(nxt)))
 
-    def save(self, quiet: bool = False) -> Optional[Path]:
+    # --- сохранение --------------------------------------------------------------------------------------
+    def save_async(self):
+        """Записать _verificat в фоне: окно не ждёт; решения следующего лота подождут конца записи."""
         if not self.book or not self.book.dirty:
-            return None
-        try:
-            path = self.book.save()
-        except PermissionError:
+            return
+        if self._saver is not None and self._saver.is_alive():
+            self._save_again = True
+            return
+        self._save_error, self._save_again = None, False
+        self.book.dirty = False
+
+        def work(book=self.book):
+            try:
+                book.save()
+            except Exception as e:      # открыт в Excel / файл появился - сообщить из главного потока
+                self._save_error = e
+                book.dirty = True
+        self._saver = threading.Thread(target=work, daemon=True)
+        self._saver.start()
+        self.save_var.set("сохраняю в Excel…")
+        self.lots.after(200, self._poll_save)
+
+    def _poll_save(self):
+        if self._saver is not None and self._saver.is_alive():
+            self.lots.after(200, self._poll_save)
+            return
+        self._saver = None
+        if self._save_error is not None:
+            self.save_var.set("НЕ сохранено в Excel")
+            self._report(self._save_error)
+            return
+        self.save_var.set(f"сохранено: {self.book.target.name}")
+        if self._save_again:
+            self.save_async()
+
+    def _wait_save(self):
+        if self._saver is not None and self._saver.is_alive():
+            self._saver.join()
+
+    def _report(self, e: Exception):
+        if isinstance(e, PermissionError):
             messagebox.showwarning("Excel", f"{self.book.target.name} открыт в Excel - закройте его и нажмите "
                                             f"«Сохранить в Excel». Решения пока в памяти и в базе.")
-            return None
-        except FileExistsError:
+        elif isinstance(e, FileExistsError):
             messagebox.showwarning("Excel", f"{self.book.target.name} появился после открытия вкладки - "
                                             f"переоткройте вкладку, чтобы не затереть его.")
+        else:
+            messagebox.showwarning("Excel", f"Не сохранено: {e}")
+
+    def save(self, quiet: bool = False) -> Optional[Path]:
+        """Сохранить сейчас (кнопка, закрытие окна): дождаться фоновой записи и записать оставшееся.
+        None - не сохранено (Excel открыт и т.п.)."""
+        self._wait_save()
+        if not self.book:
             return None
-        self.state_var.set(f"сохранено: {path.name}")
+        if not self.book.dirty:
+            return self.book.target
+        try:
+            path = self.book.save()
+        except (PermissionError, FileExistsError) as e:
+            self._report(e)
+            return None
+        self._save_error = None
+        self.book.dirty = False
+        self.save_var.set(f"сохранено: {path.name}")
         if not quiet:
             logger.info(f"[REVIEW] Сохранено: {path}")
         return path

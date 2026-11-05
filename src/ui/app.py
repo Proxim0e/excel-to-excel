@@ -404,7 +404,7 @@ class App:
 
     def close(self):
         """Закрытие окна: несохранённые решения проверки - в _verificat.xlsx."""
-        if self.review_tab is not None and self.review_tab.book is not None and self.review_tab.book.dirty:
+        if self.review_tab is not None and self.review_tab.book is not None:
             if self.review_tab.save(quiet=True) is None and not messagebox.askyesno(
                     "Проверка лотов", "Решения не записаны в Excel (они есть в базе). Закрыть всё равно?"):
                 return

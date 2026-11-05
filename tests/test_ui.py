@@ -63,7 +63,12 @@ class AppTests(unittest.TestCase):
         tab.filter_var.set("не проверенные мной")
         tab.fill_lots()
         self.assertIn("3", tab.lots.get_children())
-        tab.save()
+        tab.choice_var.set(rv_label("price_130"))
+        tab._choice_changed()
+        tab.apply()                                               # лот проверен: запись в фоне и следующий лот
+        self.assertEqual(tab.lot.lot_no, 4)
+        self.assertNotIn("3", tab.lots.get_children())            # фильтр «не проверенные мной»
+        self.assertIsNotNone(tab.save())                          # дождаться фоновой записи
         ws = load_workbook(result.with_name("result_r_verificat.xlsx"))["lot 3"]
         self.assertEqual((ws["E1"].value, ws["E11"].value), ("Tehnic corespunde", "Set perfuzie AB-123\n// verificat"))
 
