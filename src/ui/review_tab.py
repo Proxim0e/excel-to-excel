@@ -426,15 +426,31 @@ class ReviewTab:
         if not c:
             return
         self.row1_var.set(c.text or "")
-        # буква вкладки по кодбуку: образцы - (M); альтернатива - (A) или (Ad), выбирает человек
+        # буква вкладки по кодбуку: образцы - (M); альтернатива - (A) или (Ad), выбирает человек; другой статус -
+        # буква снимается, если её больше не держит ни одна оферта лота
         suffix = None
         if c.key == "mostre":
             suffix = "M"
         elif c.key == "alternativa":
             suffix = self.ask_alternative_suffix()
+        elif self.lot is not None:
+            suffix = self._suffix_without(self.offer)
         if suffix is not None and suffix != self.suffix_var.get():
             self.suffix_var.set(suffix)
             self._suffix_changed()
+
+    def _suffix_without(self, offer) -> Optional[str]:
+        """Буква вкладки, если у offer статус больше не образцы / альтернатива: M остаётся, пока у другой оферты
+        «mostre»; A / Ad - пока у другой «Alternativa»; иначе снимается (""). None - не менять."""
+        others = [o.row1 or "" for o in self.lot.offers if o is not offer]
+        cur = self.suffix_var.get()
+        has_m = any(re.search(r"mostre", t, re.IGNORECASE) for t in others)
+        has_a = any(re.search(r"alternativ", t, re.IGNORECASE) for t in others)
+        if cur == "M":
+            return None if has_m else ("A" if has_a else "")
+        if cur in ("A", "Ad"):
+            return None if has_a else ("M" if has_m else "")
+        return None
 
     def ask_alternative_suffix(self) -> Optional[str]:
         """Окно «A или Ad?» для вкладки лота с альтернативой. None - не менять."""

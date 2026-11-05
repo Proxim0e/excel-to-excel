@@ -138,9 +138,22 @@ class AppTests(unittest.TestCase):
         tab.ask_alternative_suffix = lambda: None                        # «Не менять вкладку»
         tab._choice_changed()
         self.assertEqual(tab.lot.sheet, "lot 3 (Ad)")
-        tab.choice_var.set(rv_label("corespunde"))                       # другие решения букву не трогают
+        tab.choice_var.set(rv_label("corespunde"))       # другой статус: буква снимается, её больше никто не держит
         tab._choice_changed()
-        self.assertEqual(tab.lot.sheet, "lot 3 (Ad)")
+        self.assertEqual((tab.suffix_var.get(), tab.lot.sheet), ("", "lot 3"))
+        tab.choice_var.set(rv_label("mostre"))
+        tab._choice_changed()
+        self.assertEqual(tab.lot.sheet, "lot 3 (M)")
+        tab.choice_var.set(rv_label("technical"))
+        tab._choice_changed()
+        self.assertEqual(tab.lot.sheet, "lot 3")
+        if len(tab.lot.offers) > 1:                      # M держит другая оферта с образцами - буква остаётся
+            tab.lot.offers[1].row1 = "Tehnic corespunde (mostre)"
+            tab.choice_var.set(rv_label("mostre"))
+            tab._choice_changed()
+            tab.choice_var.set(rv_label("corespunde"))
+            tab._choice_changed()
+            self.assertEqual(tab.lot.sheet, "lot 3 (M)")
 
     def test_review_tab_amdm_button(self):
         from src.amdm.cache import RegistryCache
