@@ -214,7 +214,7 @@ class OfferStrip:
             done = rv.ReviewBook.registration_confirmed(o)
             pair = tk.Frame(btns, background=_bg(o.dm_color))
             pair.pack(fill="x", pady=(1, 0))
-            for kind, text in (("dm", "✓ DM ок"), ("iso", "✓ ISO ок")):
+            for kind, text in (("dm", "✓ DM"), ("iso", "✓ ISO"), ("aviz", "✓ Aviz")):
                 c = tk.Button(pair, text=text, font=("Segoe UI", 8), cursor="hand2", padx=1, pady=0,
                               relief="sunken" if done == kind else "raised",
                               background="#c8e6c9" if done == kind else "SystemButtonFace",

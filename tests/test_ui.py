@@ -160,6 +160,16 @@ class AppTests(unittest.TestCase):
         tab.book._removed_dm.clear()
         tab.confirm_registration(0, "dm")
         self.assertEqual(tab.lot.offers[0].dm, f"DM000123456\n{REG_OK} DM")
+        # «✓ Aviz»: Aviz Sanitar вместо ISO / CE - убираются номера DM и сертификаты; «✓ ISO» их возвращает
+        tab.book.sheet(tab.lot)["E4"] = "DM000123456\nCE/ISO\n// Модель не найдена"
+        tab.lot.offers[0].dm = tab.book.sheet(tab.lot)["E4"].value
+        tab.confirm_registration(0, "aviz")
+        self.assertEqual(tab.lot.offers[0].dm, f"Aviz Sanitar\n{REG_OK} AVIZ")
+        self.assertEqual(tab.book.registration_confirmed(tab.lot.offers[0]), "aviz")
+        tab.confirm_registration(0, "iso")
+        self.assertEqual(tab.lot.offers[0].dm, f"CE/ISO\n{REG_OK} ISO")
+        tab.confirm_registration(0, "dm")
+        self.assertEqual(tab.lot.offers[0].dm, f"DM000123456\nCE/ISO\n{REG_OK} DM")
 
     def test_review_tab_choice_sets_tab_letter(self):
         from tests.test_review import make_result

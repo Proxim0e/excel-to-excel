@@ -341,7 +341,7 @@ class ReviewTab:
         return results
 
     def confirm_registration(self, index: int, kind: str = "dm"):
-        """«✓ DM ок» / «✓ ISO ок»: регистрацию проверил человек - строка 4 зелёная, «✓ verificat»; при ISO номера
+        """«✓ DM» / «✓ ISO» / «✓ Aviz»: регистрацию проверил человек - строка 4 зелёная, «✓ verificat»; при ISO номера
         DM убираются (основание - сертификат). Нажатие на выбранную кнопку снимает отметку.
         Сначала регистрация, потом решение по технике."""
         if not (self.book and self.lot) or not (0 <= index < len(self.lot.offers)):
@@ -351,12 +351,13 @@ class ReviewTab:
         new = None if self.book.registration_confirmed(o) == kind else kind
         if not self.book.confirm_registration(self.lot, o, new):
             self.state_var.set(f"{o.name}: номера DM нет ни в строке 4, ни в исходном файле - впишите его "
-                               f"в Excel или выберите «✓ ISO ок»")
+                               f"в Excel или выберите «✓ ISO» / «✓ Aviz»")
             return
         self.strip.amdm.pop((self.lot.lot_no, o.col), None)     # старый итог AMDM под номером больше не нужен
         logger.info(f"[REVIEW] {self.lot.sheet}, {o.name}: " + {
             "dm": "регистрация по DM проверена - в порядке",
             "iso": "основание - ISO / CE, проверено; номера DM убраны",
+            "aviz": "основание - Aviz Sanitar, проверено; номера DM и ISO / CE убраны",
             None: "отметка о проверке регистрации снята"}[new])
         self.fill_offers()
         self._offer_selected(index)

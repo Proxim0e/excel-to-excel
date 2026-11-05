@@ -89,6 +89,8 @@ def target_path(result: Path) -> Path:
 # строка 4: номер DM («DM000381702») и приказ под ним («Rg04-000260 01-11-2022»)
 DM_NUMBER = re.compile(r"DM\s*\d{5,}", re.IGNORECASE)
 DM_LINE = re.compile(r"^\s*(?:DM\s*\d{5,}|Rg\d+-\d+)", re.IGNORECASE)
+ISO_LINE = re.compile(r"^\s*(?:CE|ISO|EN\s*ISO)\b", re.IGNORECASE)      # строка сертификата CE / ISO
+REG_DEFAULTS = {"iso": "ISO 13485", "aviz": "Aviz Sanitar"}         # основание, если в строке 4 ничего не осталось
 
 
 def _rgb(cell) -> Optional[str]:
@@ -205,6 +207,7 @@ class ReviewBook:
         self.wb = load_workbook(self.source)
         self.dirty = False
         self._removed_dm: Dict[Tuple[int, int], List[str]] = {}   # номера DM, убранные «ISO ок» (для «DM ок»)
+        self._removed_iso: Dict[Tuple[int, int], List[str]] = {}  # ISO / CE, убранные «Aviz ок» (для «ISO ок»)
         self.reread()
         self.restore_blue()
 
@@ -258,23 +261,33 @@ class ReviewBook:
         «✓ verificat DM» / «✓ verificat ISO» (по ней кнопка и проверка AMDM знают, что выбрано).
         kind: "dm" - основание номер DM (если номера убрал «ISO ок» - возвращаются из памяти или исходного
         result-файла); "iso" - основание ISO / CE: номера DM и приказы убираются (по умолчанию «ISO 13485»);
+        "aviz" - основание Aviz Sanitar: убираются и номера DM, и строки CE / ISO (по умолчанию «Aviz Sanitar»);
         None - снять отметку. False - «DM ок», а номера DM нет нигде."""
         from src.amdm.mark import REG_OK, program_note
         cell = self.sheet(lot).cell(row=ROW_DM, column=offer.col)
         lines = [l for l in str(cell.value or "").split("\n") if l.strip() and not l.strip().startswith(REG_OK)]
         key = (lot.lot_no, offer.col)
         if kind:
-            lines = [l for l in lines if not program_note(l)]
+            other = {v for k, v in REG_DEFAULTS.items() if k != kind}        # основание прошлой кнопки по умолчанию
+            lines = [l for l in lines if not program_note(l) and l.strip() not in other]
             dm_lines = [l for l in lines if DM_LINE.match(l)]
-            if kind == "iso":
+            if kind in ("iso", "aviz"):
                 if dm_lines:
                     self._removed_dm[key] = dm_lines
-                lines = [l for l in lines if not DM_LINE.match(l)] or ["ISO 13485"]
+                lines = [l for l in lines if not DM_LINE.match(l)]
+                if kind == "aviz":          # Aviz Sanitar вместо ISO / CE: сертификаты убираются (вернёт «ISO ок»)
+                    iso = [l for l in lines if ISO_LINE.match(l)]
+                    if iso:
+                        self._removed_iso[key] = iso
+                    lines = [l for l in lines if not ISO_LINE.match(l)]
+                else:
+                    lines = lines or self._removed_iso.get(key, [])
+                lines = lines or [REG_DEFAULTS[kind]]
             elif not dm_lines:
                 back = self._removed_dm.get(key) or self._original_dm_lines(lot, offer)
                 if not back:
                     return False
-                lines = back + [l for l in lines if l.strip() != "ISO 13485"]
+                lines = back + lines
             lines.append(f"{REG_OK} {kind.upper()}")
             cell.fill = PatternFill("solid", fgColor=GREEN)
         cell.value = "\n".join(lines) or None
@@ -309,13 +322,13 @@ class ReviewBook:
 
     @staticmethod
     def registration_confirmed(offer: Offer) -> Optional[str]:
-        """Отметка человека в строке 4: "dm" / "iso" / None."""
+        """Отметка человека в строке 4: "dm" / "iso" / "aviz" / None."""
         from src.amdm.mark import REG_OK
         for line in (offer.dm or "").split("\n"):
             s = line.strip()
             if s.startswith(REG_OK):
                 tail = s[len(REG_OK):].strip().lower()
-                if tail in ("dm", "iso"):
+                if tail in ("dm", "iso", "aviz"):
                     return tail
                 # отметка без основания (05.11.2026, одна кнопка) - по номеру DM в строке
                 return "dm" if any(DM_LINE.match(l) and DM_NUMBER.search(l) for l in offer.dm.split("\n")) else "iso"
