@@ -124,19 +124,27 @@ class PlaywrightFetcher:
         """Запуск браузера с повтором: когда одновременно стартуют два браузера (кнопка «AMDM ⟳» во время проверки
         всего списка), драйвер Playwright иногда падает - «Connection closed while reading from the driver»."""
         from playwright.sync_api import sync_playwright
-        for attempt in range(1, self.LAUNCH_ATTEMPTS + 1):
+        # Свой Chromium playwright, затем Edge из Windows и полный Chromium той же сборки: 05.11.2026 в окне
+        # «Executable doesn't exist» для chrome-headless-shell, хотя файл на месте (а полный chrome.exe на
+        # рабочем ПК не запускается вовсе - «spawn UNKNOWN»), - запасные браузеры.
+        plan = [None] * self.LAUNCH_ATTEMPTS + (["msedge", "chromium"] if self.headless else ["msedge"])
+        for attempt, channel in enumerate(plan, start=1):
             try:
                 self._pw = sync_playwright().start()
-                self._browser = self._pw.chromium.launch(headless=self.headless)
+                kw = {"channel": channel} if channel else {}
+                self._browser = self._pw.chromium.launch(headless=self.headless, **kw)
+                if channel:
+                    logger.info(f"[AMDM] Запущен запасной браузер: {channel}")
                 return
             except Exception as e:
                 self.__exit__()
                 self._pw = self._browser = None
-                if attempt == self.LAUNCH_ATTEMPTS:
+                logger.warning(f"[AMDM] Браузер{' ' + channel if channel else ''} не запустился: "
+                               f"{' '.join(str(e).split())[:400]}")
+                if attempt == len(plan):
                     raise
-                logger.warning(f"[AMDM] Браузер не запустился ({str(e).splitlines()[0][:100]}) - "
-                               f"попытка {attempt + 1} из {self.LAUNCH_ATTEMPTS}")
-                time.sleep(2 * attempt)
+                logger.warning(f"[AMDM] Попытка {attempt + 1} из {len(plan)}")
+                time.sleep(2 * attempt if attempt < self.LAUNCH_ATTEMPTS else 0)
 
     def __enter__(self):
         started = time.time()

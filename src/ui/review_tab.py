@@ -11,12 +11,14 @@ from pathlib import Path
 from tkinter import messagebox, ttk
 from typing import Dict, List, Optional
 
+from src.amdm.models import IN_PROGRESS as IN_PROGRESS_STATUS
 from src.evaluate import confidence as cf
 from src.excel import review as rv
 from src.excel.verdicts import BLUE, GREEN, RED, YELLOW, effective
 from src.history.cards import split_dms
 from src.ui import card_data as cd
 from src.ui.doc_viewer import DocViewer
+from src.ui.activity import ActivityView
 from src.ui.offer_strip import OfferStrip
 
 logger = logging.getLogger(__name__)
@@ -96,6 +98,9 @@ class ReviewTab:
         self.lots.bind("<<TreeviewSelect>>", lambda e: self._lot_selected())
         self.progress_var = tk.StringVar()
         ttk.Label(left, textvariable=self.progress_var).pack(fill="x")
+        if getattr(self.app, "activity", None) is not None:      # журнал действий - под списком лотов
+            ActivityView(left, self.app.activity, height=12).frame.pack(side="bottom", fill="both", before=body,
+                                                                        pady=(4, 0))
 
         right = self.layout.pane("review_right2", ttk.Panedwindow(panes, orient="vertical"), [0.75])
         panes.add(right, weight=4)
@@ -293,6 +298,46 @@ class ReviewTab:
     amdm_db: Optional[Path] = None          # копия реестра (тесты подменяют); None - resources/amdm_registry.sqlite
     amdm_offline = False
 
+    def _activity(self):
+        return getattr(self.app, "activity", None)
+
+    def _act_start(self, key, text: str):
+        act = self._activity()
+        if act:
+            act.start(key, text)
+
+    def _amdm_db(self) -> Path:
+        if self.amdm_db is None:
+            from src.amdm.__main__ import DEFAULT_DB
+            return Path(DEFAULT_DB)
+        return self.amdm_db
+
+    def apply_amdm_all(self) -> Optional[list]:
+        """После «AMDM» для всего списка (отдельный процесс обновил копию реестра): строка 4 под DM, цвета и лист
+        «Verificare AMDM» - в открытую книгу проверки (по локальной копии, без сайта), затем запись в Excel.
+        Через книгу в памяти, чтобы следующая запись решений не затёрла пометки."""
+        if not self.book:
+            return None
+        from src.amdm.__main__ import check_workbook
+        keep = self.lot.lot_no if self.lot else None
+        self._wait_save()
+        results = check_workbook(self.book.wb, self._amdm_db(), offline=True, verbose=False)
+        self.book.reread()
+        if self.tender_id:
+            rv.attach_system(self.book.lots, self.app.kb, self.tender_id)
+        for r in results:                       # итог и под кнопкой «AMDM ⟳» у номера
+            lot_no = int(re.sub(r"\D", "", r.offer.sheet) or 0)
+            if r.status != IN_PROGRESS_STATUS:
+                self.strip.set_amdm(lot_no, r.offer.column, r.status,
+                                    f"AMDM: {r.dm or 'без DM'} - {r.status}: {'; '.join(r.reasons)}")
+        self.book.dirty = True
+        self.save(quiet=True)
+        self.lot = None
+        self.fill_lots()
+        if keep is not None and self.book.lot(keep):
+            self.show_lot(self.book.lot(keep))
+        return results
+
     def check_amdm(self, index: int):
         """Проверить номер DM участника на сайте реестра AMDM (в фоне); итог - строкой под DM и в сообщении."""
         if not self.lot or not (0 <= index < len(self.lot.offers)):
@@ -303,16 +348,12 @@ class ReviewTab:
         reg = offer_registration(o.name, o.producer, o.dm, lot.title, lot.sheet, o.col)
         key = (lot.lot_no, o.col)
         if getattr(self, "amdm_checker", None) is None:          # одна очередь и один браузер на все нажатия
-            if self.amdm_db is None:
-                from src.amdm.__main__ import DEFAULT_DB
-                db = Path(DEFAULT_DB)
-            else:
-                db = self.amdm_db
-            self.amdm_checker = Checker(db, offline=self.amdm_offline)
+            self.amdm_checker = Checker(self._amdm_db(), offline=self.amdm_offline)
         queued = self.amdm_checker.pending()
         what = ", ".join(reg.dm_numbers) or "по коду модели"
         self.strip.set_amdm(lot.lot_no, o.col, None, f"AMDM: проверяю {what} на сайте реестра…"
                             + (f" (в очереди: {queued})" if queued else ""))
+        self._act_start(("amdm",) + key, f"AMDM {what}: {lot.sheet}, {o.name}")
         done: Dict = {}
         finished = threading.Event()
 
@@ -330,15 +371,24 @@ class ReviewTab:
 
     def _amdm_done(self, key, done: Dict):
         lot_no, col = key
+        act = self._activity()
         if "error" in done:
             self.strip.set_amdm(lot_no, col, "neverificat", f"AMDM: ошибка проверки - {done['error']}")
+            if act:
+                act.finish(("amdm",) + key, ok=False)
             return
         results = done.get("results") or []
         if not results:
             self.strip.set_amdm(lot_no, col, "neverificat", "AMDM: нечего проверять (нет DM, модели и сертификатов)")
+            if act:
+                act.finish(("amdm",) + key, ok=False)
             return
         from src.amdm.matcher import overall_status
         status = overall_status(results)
+        if act:
+            e = act.by_key.get(("amdm",) + key)
+            act.finish(("amdm",) + key, f"{e.text if e else 'AMDM'} → {status}",
+                       ok=status != IN_PROGRESS_STATUS)
         text = "AMDM: " + "\n".join(f"{r.dm or 'без DM'} - {r.status}: {'; '.join(r.reasons)}" for r in results)
         self.strip.set_amdm(lot_no, col, status, text)
         if self.lot and self.lot.lot_no == lot_no and self.offer is not None and self.offer.col == col:
@@ -492,6 +542,7 @@ class ReviewTab:
         self._saver = threading.Thread(target=work, daemon=True)
         self._saver.start()
         self.save_var.set("сохраняю в Excel…")
+        self._act_start("save", f"Запись в Excel: {self.book.target.name}")
         self.lots.after(200, self._poll_save)
 
     def _poll_save(self):
@@ -499,6 +550,9 @@ class ReviewTab:
             self.lots.after(200, self._poll_save)
             return
         self._saver = None
+        act = self._activity()
+        if act:
+            act.finish("save", ok=self._save_error is None)
         if self._save_error is not None:
             self.save_var.set("НЕ сохранено в Excel")
             self._report(self._save_error)

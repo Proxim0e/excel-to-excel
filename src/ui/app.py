@@ -29,6 +29,7 @@ from src.history.db import DEFAULT_DB, connect
 from src.history import sync as answers_sync
 from src.history.review import REASONS
 from src.ui import clipboard
+from src.ui.activity import Activity, ActivityView
 from src.ui.card_form import CardForm, Tooltip
 from src.ui.layout import Layout
 from src.ui.review_tab import ReviewTab
@@ -205,7 +206,9 @@ class App:
         self.task_started = self.last_line_at = 0.0
         self.mode: Optional[str] = None     # как работаем: tender / parent / continue (выбор при запуске)
         self.start_win: Optional[tk.Toplevel] = None
+        self.activity = Activity(root)       # журнал действий («как у Claude») - во всех вкладках
         self._build()
+        self.activity.tick()
         self.tender_var.trace_add("write", lambda *_: self._sync_tender())
         self._sync_tender()
 
@@ -382,6 +385,7 @@ class App:
         self.log_text.configure(yscrollcommand=sy.set, xscrollcommand=sx.set)
         sy.pack(side="right", fill="y")
         sx.pack(side="bottom", fill="x")
+        ActivityView(logf, self.activity).frame.pack(side="bottom", fill="both", before=sx, pady=(4, 0))
         self.log_text.pack(fill="both", expand=True)
         panes.add(logf, weight=2)
 
@@ -661,7 +665,31 @@ class App:
         if not paths:
             return
         result, _ = paths
-        self._start_process("AMDM", ["-m", "src.amdm", "check", str(result)])
+        tab = self.review_tab
+        if tab is not None and tab.book is not None:
+            tab.save(quiet=True)                  # решения - в файл до проверки
+
+        def into_current_file():                  # из фонового потока - в главный
+            self.ui_calls.put(self._amdm_into_review)
+        self._start_process("AMDM", ["-m", "src.amdm", "check", str(result)], on_done=into_current_file)
+
+    def _amdm_into_review(self):
+        """Итог проверки всего списка - в открытый файл проверки (вкладка «Проверка лотов»), а не только в
+        копию *_AMDM.xlsx: строка 4 под DM, цвета, лист «Verificare AMDM», результат под кнопками «AMDM ⟳»."""
+        try:
+            tab = self._open_review_tab()
+            results = tab.apply_amdm_all()
+        except Exception as e:
+            logger.exception(f"[AMDM] Не внёс результат в файл проверки: {e}")
+            self.activity.note(f"AMDM: не внесено в файл проверки - {e}", ok=False)
+            return
+        if results is not None and tab.book is not None:
+            from collections import Counter
+            counts = Counter(r.status for r in results)
+            text = (f"AMDM внесено в {tab.book.target.name}: "
+                    + ", ".join(f"{k}: {v}" for k, v in counts.most_common()))
+            logger.info(f"[AMDM] {text}")
+            self.activity.note(text)
 
     def run_clarifications(self):
         paths = self._paths()
@@ -715,6 +743,7 @@ class App:
             self.now_var.set("сейчас: " + re.sub(r"^\[[\d:]+\]\s*", "", lines[-1])[:180])
             for line in lines:
                 self.log_text.insert("end", line + "\n", log_tag(line) or ())
+                self.activity.feed_log(line)
                 stage = stage_of(line)
                 if stage and stage != self.stage:
                     if self.stage and self.stage not in self.done_stages:
@@ -961,7 +990,7 @@ class App:
             return None
         if self.cards_tab is None:
             self.cards_tab = CardsTab(self.cards_frame, self.kb, self._card_dir, self._cards_changed,
-                                      result_fn=self._card_result)
+                                      result_fn=self._card_result, activity=self.activity)
         else:
             self.cards_tab.reload()
         return self.cards_tab

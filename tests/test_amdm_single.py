@@ -120,6 +120,32 @@ class SingleCheckTests(unittest.TestCase):
             f._launch()
         self.assertEqual((len(calls), f._browser), (2, "browser"))
 
+    def test_launch_falls_back_to_edge(self):
+        """chrome-headless-shell не запускается («Executable doesn't exist») - Edge из Windows."""
+        from src.amdm import fetch
+        channels = []
+
+        class FakePw:
+            def __init__(self):
+                self.chromium = self
+
+            def start(self):
+                return self
+
+            def launch(self, headless=True, channel=None):
+                channels.append(channel)
+                if channel != "msedge":
+                    raise RuntimeError("BrowserType.launch: Executable doesn't exist at C:\\...\\chrome-headless-shell.exe")
+                return "edge"
+
+            def stop(self):
+                pass
+        f = fetch.PlaywrightFetcher()
+        with mock.patch("playwright.sync_api.sync_playwright", lambda: FakePw()), \
+                mock.patch.object(fetch.time, "sleep", lambda s: None):
+            f._launch()
+        self.assertEqual((channels, f._browser), ([None, None, None, "msedge"], "edge"))
+
 
 class CollectRecordsTests(unittest.TestCase):
     """Проверка всего списка: сбой сайта на одном номере не обрывает остальные."""

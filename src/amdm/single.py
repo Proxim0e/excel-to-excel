@@ -32,7 +32,8 @@ def offer_registration(supplier: str, row3: str, row4: str, lot_title: str = "",
 
 
 def _short(e: Exception) -> str:
-    return (str(e).splitlines() or [type(e).__name__])[0][:150]
+    lines = [l.strip() for l in str(e).splitlines() if l.strip() and not set(l.strip()) <= set("═║╔╗╚╝ ")]
+    return " ".join(lines[:2])[:300] or type(e).__name__
 
 
 class Site:

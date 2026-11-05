@@ -199,6 +199,10 @@ class ReviewBook:
         self.source = self.target if self.target.is_file() else self.result
         self.wb = load_workbook(self.source)
         self.dirty = False
+        self.reread()
+
+    def reread(self) -> None:
+        """Лоты заново из книги в памяти (после пометок AMDM в строках 1/4 и цветов вкладок)."""
         self.lots: List[Lot] = [lot for lot in (read_lot(ws) for ws in self.wb.worksheets) if lot]
         self.lots.sort(key=lambda lot: lot.lot_no)
 

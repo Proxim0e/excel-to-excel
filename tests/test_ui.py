@@ -126,6 +126,62 @@ class AppTests(unittest.TestCase):
         tab.fill_offers()                                        # перерисовка колонок - результат остаётся
         self.assertIn("DM000123456", tab.strip.amdm_labels[1].cget("text"))
 
+    def test_review_tab_amdm_all_into_current_file(self):
+        """Общая кнопка «AMDM»: итог - в открытый файл проверки (строка 4, лист «Verificare AMDM») и под кнопками."""
+        import openpyxl
+        from unittest import mock
+        from src.amdm.cache import RegistryCache
+        from src.amdm.models import RegistryRecord
+        from tests.test_review import make_result
+        result = make_result(Path(self.tmp.name) / "result_a.xlsx")
+        amdm_db = Path(self.tmp.name) / "amdm.sqlite"
+        cache = RegistryCache(amdm_db)
+        cache.put(RegistryRecord(dm="DM000123456", model="AB-123", catalog="AB-123", producer="Producer X",
+                                 order="Rg04-000083", order_date="2023-04-13"), "site")
+        cache.close()
+        self.app.result_var.set(str(result))
+        self.app.tabs.select(self.app.review_frame)
+        tab = self.app._open_review_tab()
+        tab.amdm_db = amdm_db
+        tab.lots.selection_set("3")
+        tab._lot_selected()
+        with mock.patch("src.amdm.__main__.collect_types", lambda *a, **k: {}):
+            self.app._amdm_into_review()
+        target = tab.book.target
+        self.assertTrue(target.is_file())
+        wb = openpyxl.load_workbook(target)
+        self.assertIn("Verificare AMDM", wb.sheetnames)
+        self.assertEqual(tab.lot.lot_no, 3)                       # тот же лот на экране
+        texts = [l.cget("text") for l in tab.strip.amdm_labels.values()]
+        self.assertTrue(any("DM000123456 - " in t for t in texts), texts)
+        self.assertIn("AMDM внесено", self.app.activity.entries[-1].text)
+
+    def test_activity_log_in_tabs(self):
+        from src.ui.activity import DONE, FAILED, RUNNING
+        act = self.app.activity
+        log = logging.getLogger("x")
+        log.info("=== AMDM: старт ===")
+        log.info("[AMDM] сайт: 1/3 (33%) DM1 → найден")
+        self.app._poll_log()
+        e = act.by_key[("task", "AMDM")]
+        self.assertEqual((e.state, e.detail), (RUNNING, "сайт: 1/3 (33%) DM1 → найден"))
+        log.info("=== AMDM: готово ===")
+        log.info("[REVIEW] lot 3, Beta SA: Tehnic corespunde")
+        log.error("Поиск на сайте прерван")
+        self.app._poll_log()
+        self.assertEqual(e.state, DONE)
+        self.assertEqual([x.text for x in act.entries[-2:]], ["lot 3, Beta SA: Tehnic corespunde",
+                                                               "Поиск на сайте прерван"])
+        self.assertEqual(act.entries[-1].state, FAILED)
+        self.app.tabs.select(self.app.review_frame)
+        self.app._open_review_tab()
+        self.root.after(200)
+        self.root.update()
+        self.assertGreaterEqual(len(act.views), 2)                 # «Работа» и «Проверка лотов»
+        shown = act.views[-1].text.get("1.0", "end")
+        self.assertIn("✓ AMDM", shown)
+        self.assertIn("✗ Поиск на сайте прерван", shown)
+
     def test_log_sets_stage(self):
         logging.getLogger("x").info("[ANEXA22] Строк спецификаций: 260")
         self.app._poll_log()

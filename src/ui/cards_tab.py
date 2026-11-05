@@ -17,6 +17,7 @@ from src.evaluate.answers import answer_card
 from src.evaluate.cards import save_card
 from src.evaluate.history import resolve_key
 from src.history.cards import card_key, card_title, split_dms
+from src.ui.activity import ActivityView
 from src.ui.card_form import CardForm
 
 logger = logging.getLogger("ui")
@@ -32,10 +33,11 @@ PRODUCT_COLS = ("model_key", "producer", "model", "codes", "dm", "name", "params
 
 class CardsTab:
     def __init__(self, parent, kb, tender_dir_fn: Callable[[str], Optional[Path]], on_change: Callable[[], None],
-                 result_fn: Optional[Callable[[str], Optional[Path]]] = None):
+                 result_fn: Optional[Callable[[str], Optional[Path]]] = None, activity=None):
         self.parent, self.kb, self.tender_dir_fn, self.on_change = parent, kb, tender_dir_fn, on_change
         self.result_fn = result_fn or (lambda tender_id: None)
         self.rows: List[Dict] = []
+        self.activity = activity
         self.form: Optional[CardForm] = None
         self._build()
         self.reload()
@@ -58,7 +60,16 @@ class CardsTab:
         self.count_var = tk.StringVar()
         ttk.Label(bar, textvariable=self.count_var, foreground="#555").pack(side="left", padx=8)
 
-        panes = ttk.Panedwindow(self.parent, orient="vertical")
+        body = self.parent
+        if self.activity is not None:            # журнал действий - слева внизу, как в других вкладках
+            outer = ttk.Panedwindow(self.parent, orient="horizontal")
+            outer.pack(fill="both", expand=True)
+            side = ttk.Frame(outer)
+            ActivityView(side, self.activity, height=12).frame.pack(side="bottom", fill="both", expand=True)
+            body = ttk.Frame(outer)
+            outer.add(side, weight=1)
+            outer.add(body, weight=4)
+        panes = ttk.Panedwindow(body, orient="vertical")
         panes.pack(fill="both", expand=True)
         top = ttk.Frame(panes)
         self.tree = ttk.Treeview(top, columns=[c for c, _, _ in COLUMNS], show="headings", height=9)

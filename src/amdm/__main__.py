@@ -224,33 +224,41 @@ def collect_types(cache: RegistryCache, offers, offline: bool, headless: bool, k
     return result
 
 
-def cmd_check(args) -> int:
-    src = Path(args.workbook)
-    wb = load_workbook_tolerant(src)
+def check_workbook(wb, db: Path, offline: bool, headless: bool = True, verbose: bool = True):
+    """Проверка всех оферт книги: лист «Verificare AMDM», строка 4 и цвета в листах лотов (в памяти, без
+    сохранения). offline - только локальная копия реестра (так окно вносит в открытый файл результат
+    проверки всего списка, которая шла отдельным процессом). Возвращает результаты."""
     offers = read_offers(wb)
     numbers = {dm for o in offers for dm in o.dm_numbers}
-    cache = RegistryCache(Path(args.db))
+    cache = RegistryCache(Path(db))
     try:
-        records, site_checked = collect_records(cache, numbers, args.offline, not args.show_browser)
+        records, site_checked = collect_records(cache, numbers, offline, headless)
         codes = [c for o in offers if not o.dm_numbers for c in search_codes(o)]
-        by_name = collect_by_name(cache, codes, args.offline, not args.show_browser)
+        by_name = collect_by_name(cache, codes, offline, headless)
         from src.history.db import connect as connect_kb
         kb = connect_kb()
         try:
-            medical = collect_types(cache, [o for o in offers if not o.dm_numbers], args.offline,
-                                    not args.show_browser, kb)
+            medical = collect_types(cache, [o for o in offers if not o.dm_numbers], offline, headless, kb)
         finally:
             kb.close()
     finally:
         cache.close()
 
     results = [r for o in offers for r in check_offer(o, records, site_checked, by_name, medical)]
-    for r in results:
-        why = f" — {'; '.join(r.reasons)[:160]}" if r.status != "verde" and r.reasons else ""
-        logger.info(f"[AMDM] {r.offer.sheet}, {r.offer.supplier}: {r.dm or 'без DM'} {r.status}{why}")
+    if verbose:
+        for r in results:
+            why = f" — {'; '.join(r.reasons)[:160]}" if r.status != "verde" and r.reasons else ""
+            logger.info(f"[AMDM] {r.offer.sheet}, {r.offer.supplier}: {r.dm or 'без DM'} {r.status}{why}")
     write_report(wb, results)
     marked = mark_workbook(wb, results)
     logger.info("Листы лотов: строка 4 и цвета - " + ", ".join(f"{k}: {v}" for k, v in sorted(marked.items())))
+    return results
+
+
+def cmd_check(args) -> int:
+    src = Path(args.workbook)
+    wb = load_workbook_tolerant(src)
+    results = check_workbook(wb, Path(args.db), args.offline, not args.show_browser)
     out = Path(args.out) if args.out else src.with_name(src.stem + "_AMDM.xlsx")
     wb.save(out)
 
