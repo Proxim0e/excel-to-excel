@@ -115,6 +115,7 @@ class Offer:
     notes: str = ""
     clar: List[Dict] = field(default_factory=list)   # колонки уточнений справа: label, docs, note, color
     system: Optional[Dict] = None     # решение системы / человека из базы: status, source, reason, reasons, comment
+    dm_color: Optional[str] = None    # заливка строки 4 (итог AMDM)
 
 
 @dataclass
@@ -157,12 +158,14 @@ def read_lot(ws) -> Optional[Lot]:
             value / lot.base if value and lot.base else None,
             str(ws.cell(row=ROW_STATUS, column=col).value or "").strip(), _rgb(ws.cell(row=ROW_STATUS, column=col)),
             str(ws.cell(row=ROW_SPEC, column=col).value or "").strip(), _rgb(ws.cell(row=ROW_SPEC, column=col)),
-            str(ws.cell(row=ROW_NOTES, column=col).value or "").strip()))
+            str(ws.cell(row=ROW_NOTES, column=col).value or "").strip(),
+            dm_color=_rgb(ws.cell(row=ROW_DM, column=col))))
         c = col + 1          # уточнения: колонки без «Ofertant» в строке 2 и с «clarific…» в строке 3
         while c <= ws.max_column and not ws.cell(row=ROW_NAME, column=c).value and                 str(ws.cell(row=ROW_PRODUCER, column=c).value or "").lower().startswith("clarific"):
             lot.offers[-1].clar.append({
                 "label": str(ws.cell(row=ROW_PRODUCER, column=c).value or "").strip(),
                 "docs": str(ws.cell(row=ROW_DM, column=c).value or "").strip(),
+                "request": str(ws.cell(row=ROW_VALUE, column=c).value or "").strip(),   # «Sa solicitat …»
                 "note": str(ws.cell(row=ROW_SPEC, column=c).value or "").strip(),
                 "color": _rgb(ws.cell(row=ROW_SPEC, column=c))})
             c += 1

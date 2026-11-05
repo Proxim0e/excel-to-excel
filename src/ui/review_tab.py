@@ -17,6 +17,7 @@ from src.excel.verdicts import BLUE, GREEN, RED, YELLOW, effective
 from src.history.cards import split_dms
 from src.ui import card_data as cd
 from src.ui.doc_viewer import DocViewer
+from src.ui.offer_strip import OfferStrip
 
 logger = logging.getLogger(__name__)
 
@@ -96,7 +97,7 @@ class ReviewTab:
         self.progress_var = tk.StringVar()
         ttk.Label(left, textvariable=self.progress_var).pack(fill="x")
 
-        right = self.layout.pane("review_right", ttk.Panedwindow(panes, orient="vertical"), [0.62])
+        right = self.layout.pane("review_right2", ttk.Panedwindow(panes, orient="vertical"), [0.75])
         panes.add(right, weight=4)
         top = ttk.Frame(right, padding=4)
         right.add(top, weight=3)
@@ -112,27 +113,13 @@ class ReviewTab:
         sc = ttk.Combobox(head, textvariable=self.suffix_var, values=("", "M", "A", "Ad"), state="readonly", width=4)
         sc.pack(side="right", padx=(2, 10))
         sc.bind("<<ComboboxSelected>>", lambda e: self._suffix_changed())
-        self.req = tk.Text(top, height=4, wrap="word", font=("Segoe UI", 9), background="#f7f7f7")
+        self.req = tk.Text(top, height=3, wrap="word", font=("Segoe UI", 9), background="#f7f7f7")
         self.req.pack(fill="x", pady=(2, 4))
 
-        cols = (("name", "Участник", 170), ("pct", "% базы", 70), ("producer", "Производитель / модель", 220),
-                ("dm", "DM", 110), ("row1", "Строка 1 (Excel)", 170), ("system", "Система", 220),
-                ("clar", "Уточнения", 200))
-        tbody = ttk.Frame(top)
+        # участники колонками, как в Excel (клик - выбор участника)
+        self.strip = OfferStrip(top, lambda i: self._offer_selected(i))
+        tbody = self.strip.frame
         tbody.pack(fill="both", expand=True)     # перепаковывается ниже: решение и сообщение - всегда видны
-        self.offers = ttk.Treeview(tbody, columns=[c[0] for c in cols], show="headings", selectmode="browse",
-                                   height=3)
-        for col, text, width in cols:
-            self.offers.heading(col, text=text)
-            self.offers.column(col, width=width, anchor="w", stretch=True)
-        for tag, color in COLOR_TAGS.values():
-            self.offers.tag_configure(tag, background=color)
-        self.offers.tag_configure("human", font=("Segoe UI", 9, "bold"))
-        osy = ttk.Scrollbar(tbody, command=self.offers.yview)
-        self.offers.configure(yscrollcommand=osy.set)
-        osy.pack(side="right", fill="y")
-        self.offers.pack(fill="both", expand=True)
-        self.offers.bind("<<TreeviewSelect>>", lambda e: self._offer_selected())
         self.detail_var = tk.StringVar()      # полностью: причины системы и уточнения выбранного участника
         self.detail_box = tk.Label(top, textvariable=self.detail_var, font=("Segoe UI", 11), fg="#222",
                                    bg="#fff8dc", wraplength=1100, justify="left", anchor="w", padx=6, pady=4,
@@ -169,8 +156,12 @@ class ReviewTab:
         self.save_var = tk.StringVar()        # состояние записи в Excel
         ttk.Label(btns, textvariable=self.save_var, foreground="#1565c0").pack(side="right", padx=6)
 
-        tbody.pack_forget()
-        tbody.pack(fill="both", expand=True, before=self.detail_box)
+        # решение и сообщение системы - прижаты к низу и всегда видны; колонки участников - что осталось
+        for w in (tbody, self.detail_box, dec):
+            w.pack_forget()
+        dec.pack(side="bottom", fill="x", pady=(4, 0))
+        self.detail_box.pack(side="bottom", fill="x", pady=(4, 0))
+        tbody.pack(fill="both", expand=True)
         self.viewer = DocViewer(right)
         right.add(self.viewer.frame, weight=2)
 
@@ -191,7 +182,7 @@ class ReviewTab:
             self.save(quiet=True)
         self.book, self.lot, self.offer = None, None, None
         self.lots.delete(*self.lots.get_children())
-        self.offers.delete(*self.offers.get_children())
+        self.strip.set_lot(None)
         if not result.is_file():
             self.file_var.set("Выберите result-файл (поле «Result» сверху).")
             return
@@ -259,35 +250,25 @@ class ReviewTab:
         self.req.delete("1.0", "end")
         self.req.insert("1.0", lot.requirement)
         self.fill_offers()
-        children = self.offers.get_children()
-        if children:
-            pending = [c for c in children
-                       if not (lot.offers[int(c)].system or {}).get("source") == cf.HUMAN]
-            first = (pending or children)[0]
-            self.offers.selection_set(first)
-            self.offers.focus(first)
-            self._offer_selected()
+        if lot.offers:
+            pending = [i for i, o in enumerate(lot.offers) if (o.system or {}).get("source") != cf.HUMAN]
+            self._offer_selected((pending or [0])[0])
         else:
             self.viewer.set_docs([])
             self.state_var.set("оферт нет - вкладка тёмно-синяя")
 
     def fill_offers(self):
-        self.offers.delete(*self.offers.get_children())
-        for i, o in enumerate(self.lot.offers):
-            pct = f"{o.ratio * 100:.2f}%" if o.ratio else ""
-            clar = "; ".join(f"{c['label']}: {c['note'][:60]}" for c in o.clar)
-            tags = [COLOR_TAGS.get(o.row1_color, ("", ""))[0]]
-            if o.system and o.system.get("source") == cf.HUMAN:
-                tags.append("human")
-            self.offers.insert("", "end", iid=str(i), tags=tags,
-                               values=(("✓ " if "human" in tags else "") + o.name, pct, o.producer[:80],
-                                       o.dm[:40], o.row1, system_text(o), clar))
+        keep = self.strip.selected
+        self.strip.set_lot(self.lot, reviewed=lambda o: (o.system or {}).get("source") == cf.HUMAN,
+                           system=system_text)
+        if keep is not None:
+            self.strip.select(keep)
 
-    def _offer_selected(self):
-        sel = self.offers.selection()
-        if not sel or not self.lot:
+    def _offer_selected(self, index: int):
+        if not self.lot or not (0 <= index < len(self.lot.offers)):
             return
-        o = self.lot.offers[int(sel[0])]
+        self.strip.select(index)
+        o = self.lot.offers[index]
         if o is self.offer and self._shown == id(o.system):
             return
         self.offer, self._shown = o, id(o.system)
@@ -304,7 +285,7 @@ class ReviewTab:
         reasons = s.get("reasons") or []
         lines = [f"Система: {system_text(o).split(':')[0]}" + (": " + "; ".join(map(str, reasons)) if reasons else "")]
         lines += [f"{c['label']}: {c['note']}" + (f"  [{c['docs']}]" if c["docs"] else "") for c in o.clar]
-        self.detail_var.set("\n".join(line[:400] for line in lines))
+        self.detail_var.set("\n".join(line[:240] + ("…" if len(line) > 240 else "") for line in lines))
         docs = cd.participant_documents(self.tender_dir, o.name, self.lot.lot_no) if self.tender_dir else []
         self.viewer.set_docs(docs, probes(o))
 
@@ -371,9 +352,7 @@ class ReviewTab:
             return
         self.fill_offers()
         self.fill_lots()
-        self.offers.selection_set(pending[0])
-        self.offers.see(pending[0])
-        self._offer_selected()
+        self._offer_selected(int(pending[0]))
         self.state_var.set(f"записано; осталось участников в лоте: {len(pending)}")
 
     def _export(self):
