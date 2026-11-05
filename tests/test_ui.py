@@ -73,6 +73,37 @@ class AppTests(unittest.TestCase):
         ws = load_workbook(result.with_name("result_r_verificat.xlsx"))["lot 3"]
         self.assertEqual((ws["E1"].value, ws["E11"].value), ("Tehnic corespunde", "Set perfuzie AB-123\n// verificat"))
 
+    def test_review_tab_copy_producer_fields(self):
+        """Производитель / страна / модель - отдельные строки, щелчок копирует значение без «Ключ:»."""
+        import openpyxl
+        from tests.test_review import make_result
+        path = Path(self.tmp.name) / "result_p.xlsx"
+        make_result(path)
+        wb = openpyxl.load_workbook(path)
+        wb["lot 3"]["G3"] = "Producator: Shenzhen UpnMed Equipment\nCo., Ltd\nȚara: China\nModel: U603-1A"
+        wb.save(path)
+        self.app.result_var.set(str(path))
+        self.app.tabs.select(self.app.review_frame)
+        tab = self.app._open_review_tab()
+        tab.lots.selection_set("3")
+        tab._lot_selected()
+        self.app.root.update()
+        labels = []
+
+        def walk(w):
+            if getattr(w, "copy_value", None):
+                labels.append(w)
+            for ch in w.winfo_children():
+                walk(ch)
+        walk(tab.strip.inner)
+        values = [w.copy_value for w in labels]
+        self.assertIn("Shenzhen UpnMed Equipment Co., Ltd", values)
+        self.assertIn("China", values)
+        model = labels[values.index("U603-1A")]
+        model.event_generate("<Button-1>")
+        self.app.root.update()
+        self.assertEqual((tab.strip.copied, self.app.root.clipboard_get()), ("U603-1A", "U603-1A"))
+
     def test_review_tab_confirm_registration(self):
         """«✓ DM/ISO ок»: строка 4 без пометок AMDM, «✓ verificat», зелёная; второе нажатие снимает отметку."""
         import openpyxl

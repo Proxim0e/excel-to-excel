@@ -3,9 +3,10 @@
 модель, DM, цена за единицу, сумма, % базы, спецификация (строка 11) цветом ячейки; справа от участника - его
 колонки уточнений («clarificări (runda N)»: что запрошено, документы, итог цветом). Клик по колонке - выбор.
 """
+import re
 import tkinter as tk
 from tkinter import ttk
-from typing import Callable, List, Optional
+from typing import Callable, List, Optional, Tuple
 
 from src.excel import review as rv
 from src.excel.verdicts import BLUE, GREEN, RED, YELLOW
@@ -15,6 +16,7 @@ CELL_BG = {GREEN: "#00B050", YELLOW: "#FFFF00", RED: "#FF0000", BLUE: "#00B0F0",
            "FFFFC000": "#FFC000", "FF92D050": "#92D050"}
 DARK = {GREEN, RED, rv.NAVY}          # на тёмной заливке - белый текст
 SELECTED = "#1565c0"
+FIELD = re.compile(r"^[^\W\d][\w .()/-]{0,30}?:\s*(.+)$")   # «Producator: X», «Țara: Y», «Model: Z»
 AMDM_BG = {"verde": "#00B050", "galben": "#FFFF00", "rosu": "#FF0000", "fara DM": "#FFC000", "neverificat": "#dddddd"}
 
 
@@ -39,6 +41,7 @@ class OfferStrip:
         self.amdm: dict = {}                         # (лот, колонка) -> (статус | None, текст): результат проверки
         self.amdm_labels: dict = {}                  # индекс участника -> метка результата под DM
         self.lot: Optional[rv.Lot] = None
+        self.copied = ""                             # последнее скопированное щелчком значение
         self.frame = ttk.Frame(parent)
         self.canvas = tk.Canvas(self.frame, highlightthickness=0, background="#e8e8e8")
         sx = ttk.Scrollbar(self.frame, orient="horizontal", command=self.canvas.xview)
@@ -104,6 +107,45 @@ class OfferStrip:
         lab.pack(fill="x")
         return lab
 
+    @staticmethod
+    def fields(text: str) -> List[Tuple[str, str]]:
+        """«Producator: X / Țara: Y / Model: Z» -> [(строка, значение)]; строка без «Ключ:» продолжает предыдущую."""
+        out: List[Tuple[str, str]] = []
+        for line in (text or "").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            m = FIELD.match(line)
+            if m or not out:
+                out.append((line, (m.group(1) if m else line).strip()))
+            else:
+                prev_line, prev_value = out[-1]
+                out[-1] = (f"{prev_line} {line}", f"{prev_value} {line}")
+        return out
+
+    def copy(self, widget, value: str):
+        """Значение в буфер обмена, строка на миг зеленеет."""
+        widget.clipboard_clear()
+        widget.clipboard_append(value)
+        self.copied = value
+        bg = widget.cget("background")
+        widget.configure(background="#c8e6c9")
+        widget.after(600, lambda: widget.winfo_exists() and widget.configure(background=bg))
+
+    def _producer(self, box, text: str):
+        """Производитель / страна / модель: каждая строка отдельно, щелчок копирует её значение (без «Ключ:»)."""
+        frame = tk.Frame(box, background="#ffffff", relief="solid", borderwidth=1)
+        frame.pack(fill="x")
+        for line, value in self.fields(text) or [("", "")]:
+            lab = tk.Label(frame, text=line + ("   ⧉" if value else ""), background="#ffffff",
+                           wraplength=COLUMN_WIDTH - 12, justify="center", font=("Segoe UI", 10), padx=4, pady=0)
+            lab.pack(fill="x")
+            if value:
+                lab.configure(cursor="hand2")
+                lab.bind("<Button-1>", lambda e, w=lab, v=value: self.copy(w, v), add="+")
+                lab.copy_value = value
+        return frame
+
     def _spec(self, box, text: str, color: Optional[str]):
         t = tk.Text(box, height=7, wrap="word", font=("Segoe UI", 9), background=_bg(color, "#ffffff"),
                     foreground=_fg(color), relief="solid", borderwidth=1, width=1)
@@ -116,7 +158,7 @@ class OfferStrip:
         box = self._box(col, i)
         self._cell(box, ("✓ " if done else "") + (o.row1 or "—"), o.row1_color, bold=True, size=12)
         self._cell(box, f"Ofertant: {o.name}", bold=True)
-        self._cell(box, o.producer or "", size=10)
+        self._producer(box, o.producer or "")
         self._dm_row(box, i, o)
         unit = o.value / lot.quantity if o.value and lot.quantity else None
         self._cell(box, f"{money(unit)} / buc.    total {money(o.value)}")
