@@ -233,10 +233,12 @@ def check_offer(offer: OfferRegistration, records: dict, site_checked: set,
             continue
         record = records[dm]
         if record is None:
-            reason = "Номер не найден в реестре AMDM"
+            # Не красный: в 21641880 все 3 «не найден» Ivan принял - поиск сайта мог не ответить / номер
+            # переоформлен. Отклонение «Nu este inregistrat» - только после ручной проверки на сайте.
+            reason = "Номер не найден в реестре AMDM — проверить вручную на сайте (поиск мог не ответить)"
             if dm not in site_checked:
-                reason += " (по локальной отметке; перепроверить на сайте)"
-            results.append(CheckResult(offer, dm, FAIL, [reason]))
+                reason += "; по локальной отметке"
+            results.append(CheckResult(offer, dm, CHECK, [reason]))
             continue
 
         reasons: List[str] = []

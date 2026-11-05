@@ -17,7 +17,7 @@ import sqlite3
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
-from src.anexa22.requirements import _fold, check_declarative, label_before, parse_constraints
+from src.anexa22.requirements import _fold, _related, check_declarative, label_before, parse_constraints
 from src.classify import GROUPS, normalize
 
 TECH_TYPES = tuple(GROUPS["Document tehnic"] + GROUPS["ISO/CE/DM"])
@@ -71,10 +71,10 @@ def _alnum(text: str) -> str:
     return re.sub(r"[\W_]+", "", normalize(text))
 
 
-def _quote(page_text: str, pos_test) -> Optional[str]:
-    """Строка страницы, для которой pos_test(нормализованная строка) истинно."""
+def _quote(page_text: str, pos_test, echo: set = frozenset()) -> Optional[str]:
+    """Строка страницы, для которой pos_test(нормализованная строка) истинно (не повтор требования)."""
     for line in page_text.splitlines():
-        if pos_test(normalize(line)):
+        if pos_test(normalize(line)) and not is_echo(line, echo):
             q = re.sub(r"\s+", " ", line).strip()
             return q[:QUOTE_CHARS] + ("…" if len(q) > QUOTE_CHARS else "")
     return None
@@ -84,6 +84,35 @@ def _value_rx(num: str, unit: str):
     variants = {num, num.replace(".", ",")}
     alt = "|".join(re.escape(v) for v in variants)
     return re.compile(rf"(?<![\d.,])(?:{alt})\s?{re.escape(unit)}(?![a-z])")
+
+
+# Строка документа, повторяющая требование (участник переписал его в письме-ответе «Rezistența la flux
+# ≤ 0,3 cm H2O»), - не подтверждение: 21641880 лоты 50, 81 стали зелёными по таким строкам
+ECHO_MIN_WORDS = 5
+ECHO_SHARE = 0.9
+
+
+def _words(text: str) -> List[str]:
+    return re.findall(r"[a-z0-9]{3,}", normalize(text or ""))
+
+
+def is_echo(line: str, requirement_words: set) -> bool:
+    words = _words(line)
+    return (bool(requirement_words) and len(words) >= ECHO_MIN_WORDS
+            and sum(w in requirement_words for w in words) / len(words) >= ECHO_SHARE)
+
+
+def _strip_echo(page, requirement: str, echo: set):
+    """Страница письма-ответа, переписывающего требование: убрать повторы требования, в том числе
+    короткие обрывки строк («Hz ≤ 150 ohm;» после переноса), - остаются только ответы участника."""
+    sha, name, pno, text = page
+    lines = text.splitlines()
+    if not any(is_echo(line, echo) for line in lines):
+        return page
+    req = re.sub(r"\s+", " ", normalize(requirement or ""))
+    kept = [line for line in lines if not is_echo(line, echo)
+            and not (len(_words(line)) >= 2 and re.sub(r"\s+", " ", normalize(line)).strip() in req)]
+    return sha, name, pno, "\n".join(kept)
 
 
 # Итог уровня 2 для ячейки строки 11 (цвета - как в Excel Ivan, кодбук концепта)
@@ -168,16 +197,17 @@ def check_offer(conn: sqlite3.Connection, participant: str, lot: int, model: str
     declared = check_declarative(spec, requirement, title, f"{model} {offered_extra}") if requirement else None
     codes = model_tokens(model)
     values = spec_values(spec)
-    extra_pages = list(extra_pages or [])
+    echo = set(_words(requirement))
+    extra_pages = [_strip_echo(p, requirement, echo) for p in extra_pages or []]
     pages = tech_pages(conn, participant, lot) + extra_pages
-    evidence = _search(pages, codes, values, always=extra_pages) if pages else []
+    evidence = _search(pages, codes, values, always=extra_pages, echo=echo) if pages else []
     found = {f for ev in evidence for f in ev.found}
     search_pages = pages
     if codes and not any(c in found for c in codes):
         wider = [p for p in tech_pages(conn, participant, None)
                  if any(_alnum(c) in _alnum(p[3]) for c in codes)]
         if wider:
-            evidence = _search(wider, codes, values, always=extra_pages)
+            evidence = _search(wider, codes, values, always=extra_pages, echo=echo)
             found = {f for ev in evidence for f in ev.found}
             search_pages = wider
     if not evidence and not pages:
@@ -188,7 +218,7 @@ def check_offer(conn: sqlite3.Connection, participant: str, lot: int, model: str
     if not_found and requirement and codes:
         model_pages = [p for p in search_pages if any(_alnum(c) in _alnum(p[3]) for c in codes)]
         for num, unit in list(not_found):
-            ev = _satisfying_value(model_pages, num, unit, requirement)
+            ev = _satisfying_value(model_pages, num, unit, requirement, echo)
             if ev:
                 evidence.append(ev)
                 not_found.remove((num, unit))
@@ -201,17 +231,65 @@ def check_offer(conn: sqlite3.Connection, participant: str, lot: int, model: str
     # Цитаты из документов уточнений - первыми: они не должны теряться за лимитом MAX_PAGES
     extra_names = {name for _, name, _, _ in extra_pages}
     evidence.sort(key=lambda e: e.document not in extra_names)
-    return _with_declared(OfferCheck(status, evidence[:MAX_PAGES], missing), declared, extra_pages)
+    check = _with_declared(OfferCheck(status, evidence[:MAX_PAGES], missing), declared, extra_pages, echo)
+    if requirement:
+        # значение в документе нарушает требование («≤ 1,63 cm H2O» при «≤ 0,3») - противоречие, не зелёный
+        doc_pages = list(dict.fromkeys(extra_pages + list(search_pages)))
+        contra = document_conflicts(doc_pages, parse_constraints(requirement), codes, echo)
+        if contra:
+            check.conflicts = list(dict.fromkeys(check.conflicts + contra))
+            check.status = YELLOW
+    return check
 
 
-def _with_declared(check: OfferCheck, declared, extra_pages: Optional[list] = None) -> OfferCheck:
+CONFLICT_WINDOW = 15    # строк от кода модели: письмо-ответ одно на все лоты, чужие разделы не считаются
+
+
+def _model_lines(pages, codes: List[str]):
+    """[(страница, строка)] не дальше CONFLICT_WINDOW строк от строки с кодом модели оферты."""
+    keys = [_alnum(c) for c in codes if _alnum(c)]
+    out = []
+    for page in pages:
+        lines = page[3].splitlines()
+        marks = [i for i, line in enumerate(lines) if any(k in _alnum(line) for k in keys)]
+        out += [(page, line) for i, line in enumerate(lines)
+                if any(abs(i - m) <= CONFLICT_WINDOW for m in marks)]
+    return out
+
+
+def document_conflicts(pages, conditions, codes: List[str], echo: set = frozenset()) -> List[str]:
+    """Условия требования, которым противоречит значение того же параметра рядом с кодом модели
+    («Rezistența la flux ≤ 1,63 cm H2O» при «≤ 0,3»). Если рядом есть и подходящее значение (каталог с
+    вариантами «0.30 or 0.40 mm») - не противоречие. Без кода модели - не проверяется."""
+    if not codes:
+        return []
+    lines = [(page, line) for page, line in _model_lines(pages, codes) if not is_echo(line, echo)]
+    parsed = [(page, line, v) for page, line in lines for v in parse_constraints(line)]
+    out = []
+    for condition in conditions:
+        if not re.search(r"[^\W\d_]{3,}", condition.text or ""):
+            continue
+        same = [(page, line, v) for page, line, v in parsed
+                if v.family == condition.family and _related(v.text, condition.text)]
+        good = [x for x in same if condition.satisfied_by(x[2])
+                or (x[2].kind in ("range", "tol", "range_tol") and condition.overlaps(x[2]))]
+        bad = [x for x in same if x not in good]
+        if bad and not good:
+            page, line, _ = bad[0]
+            quote = re.sub(r"\s+", " ", line).strip()[:QUOTE_CHARS]
+            out.append(f"{condition.text} (doc: {quote}, p[{page[2]}], {page[1]})")
+    return out
+
+
+def _with_declared(check: OfferCheck, declared, extra_pages: Optional[list] = None,
+                   echo: set = frozenset()) -> OfferCheck:
     """Добавляет итог уровня 1: расхождения и пропуски в Anexa 22 делают ячейку жёлтой.
     Условие закрывается, если в документах уточнений есть значение, которое в него укладывается."""
     if declared is None:
         return check
     resolved = set()
     for condition, note in (declared.open_conditions or []) if extra_pages else []:
-        ev = _value_for_condition(extra_pages, condition)
+        ev = _value_for_condition(extra_pages, condition, echo)
         if ev:
             resolved.add(note)
             check.evidence.insert(0, ev)
@@ -226,18 +304,24 @@ def _with_declared(check: OfferCheck, declared, extra_pages: Optional[list] = No
     return check
 
 
-def _value_for_condition(pages, condition) -> Optional[Evidence]:
-    """Строка документа со значением, которое укладывается в условие требования или пересекается с ним."""
+def _value_for_condition(pages, condition, echo: set = frozenset()) -> Optional[Evidence]:
+    """Строка документа со значением, которое укладывается в условие требования или пересекается с ним
+    диапазоном («150-180 cm» при «≥ 160 cm»). Граница («≤ 1,63») - только если укладывается целиком;
+    строка-повтор требования не считается."""
     for sha, name, pno, text in pages:
         for line in text.splitlines():
+            if is_echo(line, echo):
+                continue
             for value in parse_constraints(line):
-                if condition.satisfied_by(value) or (value.kind != "exact" and condition.overlaps(value)):
+                if condition.satisfied_by(value) or (value.kind in ("range", "tol", "range_tol")
+                                                     and condition.overlaps(value)):
                     quote = re.sub(r"\s+", " ", line).strip()[:QUOTE_CHARS]
                     return Evidence(name, pno, [quote], [condition.text])
     return None
 
 
-def _satisfying_value(pages, num: str, unit: str, requirement: str) -> Optional[Evidence]:
+def _satisfying_value(pages, num: str, unit: str, requirement: str,
+                      echo: set = frozenset()) -> Optional[Evidence]:
     """Значение в документе, которое укладывается в условие требования для заявленного значения."""
     offered = parse_constraints(f"{num} {unit}")
     if not offered:
@@ -247,6 +331,8 @@ def _satisfying_value(pages, num: str, unit: str, requirement: str) -> Optional[
         return None
     for sha, name, pno, text in pages:
         for line in text.splitlines():
+            if is_echo(line, echo):
+                continue
             for value in parse_constraints(line):
                 if value.kind == "exact" and any(c.satisfied_by(value) for c in conditions):
                     quote = re.sub(r"\s+", " ", line).strip()[:QUOTE_CHARS]
@@ -258,7 +344,8 @@ def find_evidence(conn: sqlite3.Connection, participant: str, lot: int, model: s
     return check_offer(conn, participant, lot, model, spec).evidence
 
 
-def _search(pages, codes: List[str], values: List[Tuple[str, str]], always=()) -> List[Evidence]:
+def _search(pages, codes: List[str], values: List[Tuple[str, str]], always=(),
+            echo: set = frozenset()) -> List[Evidence]:
     """always - страницы, которые ищутся всегда, даже без кода модели: документы уточнений уже
     отобраны по лоту и модели, а письмо-ответ код модели обычно не повторяет."""
     with_model = [(sha, name, pno, text) for sha, name, pno, text in pages
@@ -278,10 +365,10 @@ def _search(pages, codes: List[str], values: List[Tuple[str, str]], always=()) -
                     ev.quotes.append(q)
         for num, unit in values:
             rx = _value_rx(num, unit)
-            if rx.search(normalize(text)):
-                q = _quote(text, rx.search)
+            q = _quote(text, rx.search, echo)
+            if q:
                 ev.found.append(f"{num} {unit}")
-                if q and q not in ev.quotes:
+                if q not in ev.quotes:
                     ev.quotes.append(q)
         if ev.found:
             ev.quotes = ev.quotes[:MAX_QUOTES]

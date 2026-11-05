@@ -130,6 +130,29 @@ class DeclarativeTests(unittest.TestCase):
         self.assertTrue(is_copy(req + " *Conform broșură pagina 1", req))
         self.assertFalse(is_copy("Electrod ECG REF JD17O01", req))
 
+    def test_asymmetric_tolerance_and_range_side(self):
+        self.assertEqual(bounds("Diametru exterior – 26.0 -0; +0,5mm"), [("tol", "len", 26, 26.5)])
+        self.assertEqual(bounds("Rolă 55-57 mm x 20m"), [("range", "len", 55, 57), ("exact", "len", 20000, 20000)])
+        req = "Diametru interior – 24mm ±0,2mm\nDiametru exterior – 26 mm ±0,5mm"
+        off = "Diametru interior – 24mm ±0,2mm Diametru exterior – 26.0 -0; +0,5mm"
+        self.assertEqual(check_declarative(off, req).status, "ok")
+
+    def test_paper_roll_without_units(self):
+        """«rolă 57x20x12» - ширина мм x длина м x втулка: сторона к стороне (21641880, Ivan - зелёный)."""
+        def status(off, req):
+            return check_declarative(off, req).status
+        self.assertEqual(status("Hartie termosensibila, rolă 57x20x12 bobinată exterior", "Rolă 55-57 mm x 20m"), "ok")
+        self.assertEqual(status("Hârtie ECG, top 112x140x160 file", "termosensibilă 112mm х 140mm х 160P"), "ok")
+        self.assertEqual(status("Hârtie ECG, rola 80x20x12, bucșă", "Hârtie milimetrică ECG 80 mm x min 20 m"), "ok")
+        # другая ширина / длина - не закрыто; 12 - втулка, а не длина 12 m
+        self.assertEqual(status("rola 50x20x12 bobinată", "Hirtie termo 57 mm x 18 m"), "alternativa")
+        self.assertEqual(status("rola 50x20x12 bobinată", "Rolă 50 mm x12 m"), "alternativa")
+
+    def test_label_cut_by_separator_uses_context(self):
+        req = "1.Ambalaj: Canistre de 5 l\n2.Granulație: 2-4 mm\n3.Culoare: alb"
+        off = "-forma: granule de forma regulata – sfere cu diametrul de 3-4 mm – fara praf, canistre de 5L"
+        self.assertEqual(check_declarative(off, req).status, "ok")
+
 
 if __name__ == "__main__":
     unittest.main()

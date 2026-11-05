@@ -50,8 +50,13 @@ END = r"(?![a-z0-9/])"  # «30l/min» - расход, а не объём
 PATTERNS = [
     # 25- 35 cm ±3 cm - диапазон с допуском
     ("range_tol", re.compile(rf"(?<![\d.,])({NUM})\s?({UNIT_RX})?\s*(?:-|–)\s*({NUM})\s?({UNIT_RX})\s*\(?\s*{TOL}\s*({NUM})\s?({UNIT_RX})?\s*\)?")),
+    # 26.0 -0; +0,5mm, 26 +0,5/-0 mm - несимметричный допуск
+    ("asym", re.compile(rf"(?<![\d.,])({NUM})\s?({UNIT_RX})?\s*-\s*({NUM})\s?({UNIT_RX})?\s*[;,/]?\s*\+\s*({NUM})\s?({UNIT_RX}){END}")),
+    ("asym_rev", re.compile(rf"(?<![\d.,])({NUM})\s?({UNIT_RX})?\s*\+\s*({NUM})\s?({UNIT_RX})?\s*[;,/]?\s*-\s*({NUM})\s?({UNIT_RX}){END}")),
     # 70 mm (+-5mm), 200cm (±10cm)
     ("tol", re.compile(rf"({NUM})\s?({UNIT_RX})?\s*\(?\s*{TOL}\s*({NUM})\s?({UNIT_RX})?\s*\)?")),
+    # Rolă 55-57 mm x 20m - первая сторона диапазоном
+    ("dims_range", re.compile(rf"(?<![\d.,])({NUM})\s?(?:-|–)\s?({NUM})\s?({UNIT_RX})\s*[x×х]\s*({NUM})\s?({UNIT_RX}){END}")),
     # 100mmx200m, 110mm х 140mm (бывает кириллическая «х») - каждое число отдельно
     ("dims", re.compile(rf"({NUM})\s?({UNIT_RX})?\s*[x×х]\s*({NUM})\s?({UNIT_RX}){END}")),
     # 240-310 cm, 104–106 mm, 0~300mm hg
@@ -76,6 +81,9 @@ class Constraint:
     kind: str                # tol / range / min / max / exact
     text: str                # исходный фрагмент: «Lungime: ≥ 15 cm»
     dims: Optional[Tuple[float, ...]] = None  # размер AxB целиком (по возрастанию) - у обеих сторон
+    context: str = ""        # текст перед значением (до 70 знаков, без разбора разделителей) - для подписи,
+                             # обрезанной по запятой / переводу строки: «granule …, sfere 3-4 mm»
+    side: Optional[int] = None  # сторона размера «A x B» (0 / 1) - для сверки с размером без единиц
 
     def satisfied_by(self, other: "Constraint") -> bool:
         """Значение/диапазон other укладывается в условие."""
@@ -154,8 +162,9 @@ def parse_constraints(text: str) -> List[Constraint]:
         if not re.search(r"[^\W\d_]{3,}", re.sub(UNIT_RX, "", _fold(label))) and len(ends) > 1:
             # «Impedanță 10 Hz ≤ 150 ohm»: подпись «≤ 150 ohm» без названия - берём с предыдущим значением
             label = label_before(text, start, end, begin=ends[-2])
+        context = re.sub(r"\s+", " ", (text or "")[max(0, start - 70):end + 15])
         for c in built:
-            c.text = label
+            c.text, c.context = label, context
             result.append(c)
         ends.append(end)
     return result
@@ -171,6 +180,23 @@ def _build(kind: str, m) -> List[Constraint]:
         tol = _num(g[4]) * (_unit(g[5]) or u_hi)[1]
         lo, hi = _num(g[0]) * u_lo[1], _num(g[2]) * u_hi[1]
         return [Constraint(u_hi[0], min(lo, hi) - tol, max(lo, hi) + tol, kind, "")]
+    if kind in ("asym", "asym_rev"):
+        u = _unit(g[5])
+        u_c = _unit(g[1]) or u
+        if not u or u_c[0] != u[0]:
+            return []
+        center = _num(g[0]) * u_c[1]
+        minus, plus = (_num(g[2]), _num(g[4])) if kind == "asym" else (_num(g[4]), _num(g[2]))
+        k_m = (_unit(g[3]) or u)[1] if kind == "asym" else u[1]
+        k_p = u[1] if kind == "asym" else (_unit(g[3]) or u)[1]
+        return [Constraint(u[0], center - minus * k_m, center + plus * k_p, "tol", "")]
+    if kind == "dims_range":
+        u_a, u_b = _unit(g[2]), _unit(g[4])
+        if not u_a or not u_b:
+            return []
+        lo, hi = sorted((_num(g[0]) * u_a[1], _num(g[1]) * u_a[1]))
+        b = _num(g[3]) * u_b[1]
+        return [Constraint(u_a[0], lo, hi, "range", "", side=0), Constraint(u_b[0], b, b, "exact", "", side=1)]
     if kind == "tol":
         u = _unit(g[1]) or _unit(g[3])
         if not u:
@@ -186,7 +212,7 @@ def _build(kind: str, m) -> List[Constraint]:
             return []
         a, b = _num(g[0]) * u_a[1], _num(g[2]) * u_b[1]
         dims = tuple(sorted((a, b))) if u_a[0] == u_b[0] else None
-        return [Constraint(u_a[0], a, a, "exact", "", dims), Constraint(u_b[0], b, b, "exact", "", dims)]
+        return [Constraint(u_a[0], a, a, "exact", "", dims, side=0), Constraint(u_b[0], b, b, "exact", "", dims, side=1)]
     if kind == "range":
         u_hi = _unit(g[3])
         u_lo = _unit(g[1]) or u_hi
@@ -265,14 +291,42 @@ def _related(a: str, b: str) -> bool:
     return True
 
 
+# Размер без единиц: «rolă 57x20x12» (ширина мм x длина м x втулка), «top 112x140x160» (мм x мм x листов)
+BARE_DIMS_RE = re.compile(rf"(?<![\w.,])({NUM})\s*[x×х]\s*({NUM})(?:\s*[x×х]\s*({NUM}))?(?!\w|[.,]\d)(?!\s?(?:{UNIT_RX}){END})")
+DIMS_TEXT_RE = re.compile(r"\d\s*[a-zµ]{0,3}\s*[x×х]\s*(?:min\.?\s*)?\d", re.IGNORECASE)
+SCALES = (1, 10, 1000)          # мм / см / м
+
+
+def bare_dims(text: str) -> List[Tuple[float, ...]]:
+    return [tuple(_num(g) for g in m.groups() if g) for m in BARE_DIMS_RE.finditer(_fold(text or ""))]
+
+
+def _bare_fits(c: Constraint, tuples) -> bool:
+    """Условие-размер («55-57 mm x 20m», «112mm х 140mm») закрыто размером без единиц из предложения:
+    каждое число требования есть среди чисел размера (в мм, см или м)."""
+    if c.family != "len" or not DIMS_TEXT_RE.search(_fold(f"{c.text} {c.context}")):
+        return False
+    for t in tuples:
+        # «55-57 mm x 20m» против «57x20x12»: сторона к стороне (12 - втулка, а не длина)
+        values = t if c.side is None else t[c.side:c.side + 1]
+        if any(c.satisfied_by(Constraint("len", n * k, n * k, "exact", "")) for n in values for k in SCALES):
+            return True
+    return False
+
+
 def _fmt_dims(values, family: str) -> str:
     unit = {"len": "mm", "vol": "ml", "mass": "g", "time": "min"}.get(family, "")
     return "x".join(f"{v:g}" for v in values) + (f" {unit}" if unit else "")
 
 
-def _check_numbers(req: List[Constraint], off: List[Constraint]):
+def _check_numbers(req: List[Constraint], off: List[Constraint], bare: Optional[List[Tuple[float, ...]]] = None):
     """Числовые условия: значение засчитывается только при родственной подписи (или без подписи, если
-    в запросе одно условие этого семейства); размер AxB - целиком."""
+    в запросе одно условие этого семейства); размер AxB - целиком. bare - размеры предложения без единиц."""
+    bare = bare or []
+
+    def bare_ok(c: Constraint) -> bool:      # размер «A x B» - обе стороны
+        sides = [x for x in req if x.dims == c.dims and x.family == c.family] if c.dims else [c]
+        return all(_bare_fits(x, bare) for x in sides)
     conflicts, missing, matched, open_conditions = [], [], [], []
     # Сколько разных условий каждого семейства в запросе (одно и то же «5mm» дважды - одно условие)
     per_family = {}
@@ -285,18 +339,23 @@ def _check_numbers(req: List[Constraint], off: List[Constraint]):
             key = (c.family, c.dims)
             if key in done_dims:
                 continue
-            done_dims.add(key)
             offered_dims = sorted({o.dims for o in off if o.dims and o.family == c.family})
             if c.dims in offered_dims:
+                done_dims.add(key)
                 matched.append((c, next(o for o in off if o.dims == c.dims)))
                 continue
+            if bare_ok(c):
+                done_dims.add(key)
+                matched.append((c, c))
+                continue
             if offered_dims:
+                done_dims.add(key)
                 # «30x30 mm» против «50x50 mm» - другой размер
                 note = f"{c.text} (A22: {_fmt_dims(offered_dims[0], c.family)})"
                 conflicts.append(note)
                 open_conditions.append((c, note))
                 continue
-            # в предложении размер не парой: стороны ищем как обычные значения
+            # в предложении размер не парой: каждую сторону ищем как обычное значение
         same = [o for o in off if o.family == c.family]
         fits = [o for o in same if c.satisfied_by(o) or c.overlaps(o)]
         ok = [o for o in fits if _related(o.text, c.text)]
@@ -307,6 +366,12 @@ def _check_numbers(req: List[Constraint], off: List[Constraint]):
             ok = fits
         elif not ok and per_family[c.family] <= 1:
             ok = [o for o in fits if not _label_words(o.text)]
+        if not ok:
+            # подпись обрезана разделителем: значение подходит, а рядом в тексте - то же название параметра
+            ok = [o for o in fits if _related(o.context, c.text)]
+        if not ok and _bare_fits(c, bare):
+            matched.append((c, c))
+            continue
         if ok:
             # при нескольких подходящих - с наибольшим совпадением слов названия параметра
             best = max(ok, key=lambda o: len(_label_words(o.text) & _label_words(c.text)))
@@ -428,7 +493,7 @@ def check_declarative(offered: str, required: str, title: str = "", offered_extr
     """
     req = parse_constraints(required)
     off = parse_constraints(offered)
-    conflicts, missing, matched, open_conditions = _check_numbers(req, off)
+    conflicts, missing, matched, open_conditions = _check_numbers(req, off, bare_dims(offered))
     whole = f"{offered or ''} {offered_extra or ''}"
     q_conflicts, q_missing = _check_quality(whole, required)
     conflicts += q_conflicts

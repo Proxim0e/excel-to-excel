@@ -102,11 +102,13 @@ class CheckOfferTest(unittest.TestCase):
         [r] = check_offer(offer(), {"DM000654009": RECORD}, {"DM000654009"})
         self.assertEqual(r.status, OK)
 
-    def test_not_found_is_red(self):
+    def test_not_found_is_yellow(self):
+        """«Не найден» - жёлтый с ручной проверкой (21641880: все 3 такие номера Ivan принял)."""
         [r] = check_offer(offer(), {"DM000654009": None}, {"DM000654009"})
-        self.assertEqual(r.status, FAIL)
+        self.assertEqual(r.status, CHECK)
+        self.assertIn("проверить вручную", r.reasons[0])
         [r] = check_offer(offer(), {"DM000654009": None}, set())
-        self.assertIn("перепроверить", r.reasons[0])
+        self.assertIn("по локальной отметке", r.reasons[0])
 
     def test_search_codes(self):
         from src.amdm.matcher import search_codes
@@ -213,7 +215,8 @@ class CheckOfferTest(unittest.TestCase):
     def test_kit_overall_is_worst(self):
         rs = check_offer(offer(dm_numbers=["DM000654009", "DM000000001"]),
                          {"DM000654009": RECORD, "DM000000001": None}, {"DM000000001"})
-        self.assertEqual(overall_status(rs), FAIL)
+        self.assertEqual(overall_status(rs), CHECK)         # набор: худший - «не найден» (жёлтый)
+        self.assertEqual(overall_status([rs[0], rs[1].__class__(rs[1].offer, "x", FAIL, [])]), FAIL)
 
 
 class CacheTest(unittest.TestCase):
