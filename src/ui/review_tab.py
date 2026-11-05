@@ -117,7 +117,7 @@ class ReviewTab:
         self.req.pack(fill="x", pady=(2, 4))
 
         # участники колонками, как в Excel (клик - выбор участника)
-        self.strip = OfferStrip(top, lambda i: self._offer_selected(i))
+        self.strip = OfferStrip(top, lambda i: self._offer_selected(i), on_amdm=self.check_amdm)
         tbody = self.strip.frame
         tbody.pack(fill="both", expand=True)     # перепаковывается ниже: решение и сообщение - всегда видны
         self.detail_var = tk.StringVar()      # полностью: причины системы и уточнения выбранного участника
@@ -289,13 +289,104 @@ class ReviewTab:
         docs = cd.participant_documents(self.tender_dir, o.name, self.lot.lot_no) if self.tender_dir else []
         self.viewer.set_docs(docs, probes(o))
 
+    # --- AMDM по кнопке у номера DM ------------------------------------------------------------------------
+    amdm_db: Optional[Path] = None          # копия реестра (тесты подменяют); None - resources/amdm_registry.sqlite
+    amdm_offline = False
+
+    def check_amdm(self, index: int):
+        """Проверить номер DM участника на сайте реестра AMDM (в фоне); итог - строкой под DM и в сообщении."""
+        if not self.lot or not (0 <= index < len(self.lot.offers)):
+            return
+        from src.amdm.single import check_single, offer_registration
+        lot, o = self.lot, self.lot.offers[index]
+        self._offer_selected(index)
+        reg = offer_registration(o.name, o.producer, o.dm, lot.title, lot.sheet, o.col)
+        key = (lot.lot_no, o.col)
+        what = ", ".join(reg.dm_numbers) or "по коду модели"
+        self.strip.set_amdm(lot.lot_no, o.col, None, f"AMDM: проверяю {what} на сайте реестра…")
+        if self.amdm_db is None:
+            from src.amdm.__main__ import DEFAULT_DB
+            db = Path(DEFAULT_DB)
+        else:
+            db = self.amdm_db
+        done: Dict = {}
+
+        def work():
+            try:
+                done["results"] = check_single(reg, db, offline=self.amdm_offline)
+            except Exception as e:
+                done["error"] = e
+        t = threading.Thread(target=work, daemon=True)
+        t.start()
+        self._amdm_threads = getattr(self, "_amdm_threads", []) + [t]
+
+        def poll():
+            if t.is_alive():
+                self.lots.after(300, poll)
+                return
+            self._amdm_done(key, done)
+        self.lots.after(300, poll)
+
+    def _amdm_done(self, key, done: Dict):
+        lot_no, col = key
+        if "error" in done:
+            self.strip.set_amdm(lot_no, col, "neverificat", f"AMDM: ошибка проверки - {done['error']}")
+            return
+        results = done.get("results") or []
+        if not results:
+            self.strip.set_amdm(lot_no, col, "neverificat", "AMDM: нечего проверять (нет DM, модели и сертификатов)")
+            return
+        from src.amdm.matcher import overall_status
+        status = overall_status(results)
+        text = "AMDM: " + "\n".join(f"{r.dm or 'без DM'} - {r.status}: {'; '.join(r.reasons)}" for r in results)
+        self.strip.set_amdm(lot_no, col, status, text)
+        if self.lot and self.lot.lot_no == lot_no and self.offer is not None and self.offer.col == col:
+            self.detail_var.set(text[:600] + "\n" + self.detail_var.get())
+
     def _choice(self) -> Optional[rv.Choice]:
         return next((c for c in rv.CHOICES if c.label == self.choice_var.get()), None)
 
     def _choice_changed(self):
         c = self._choice()
-        if c:
-            self.row1_var.set(c.text or "")
+        if not c:
+            return
+        self.row1_var.set(c.text or "")
+        # буква вкладки по кодбуку: образцы - (M); альтернатива - (A) или (Ad), выбирает человек
+        suffix = None
+        if c.key == "mostre":
+            suffix = "M"
+        elif c.key == "alternativa":
+            suffix = self.ask_alternative_suffix()
+        if suffix is not None and suffix != self.suffix_var.get():
+            self.suffix_var.set(suffix)
+            self._suffix_changed()
+
+    def ask_alternative_suffix(self) -> Optional[str]:
+        """Окно «A или Ad?» для вкладки лота с альтернативой. None - не менять."""
+        win = tk.Toplevel(self.lots)
+        win.title("Альтернатива: буква вкладки")
+        win.transient(self.lots.winfo_toplevel())
+        win.resizable(False, False)
+        answer: Dict[str, Optional[str]] = {"v": None}
+        ttk.Label(win, text=f"Лот {self.lot.lot_no if self.lot else ''}: какая альтернатива?",
+                  font=("Segoe UI", 11, "bold")).pack(padx=16, pady=(12, 8))
+        row = ttk.Frame(win)
+        row.pack(padx=16, pady=(0, 12))
+
+        def pick(v):
+            answer["v"] = v
+            win.destroy()
+        for text, v in (("A - альтернатива с уточнением", "A"), ("Ad - альтернатива по умолчанию", "Ad")):
+            b = tk.Button(row, text=text, font=("Segoe UI", 10), width=30, pady=4, command=lambda v=v: pick(v))
+            b.pack(pady=3)
+        ttk.Button(row, text="Не менять вкладку", command=win.destroy).pack(pady=(6, 0))
+        win.bind("<Escape>", lambda e: win.destroy())
+        win.bind("a", lambda e: pick("A"))
+        win.bind("d", lambda e: pick("Ad"))
+        win.grab_set()
+        win.focus_set()
+        self.lots.wait_window(win)
+        return answer["v"]
 
     def _suffix_changed(self):
         if self.book and self.lot:

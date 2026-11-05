@@ -73,6 +73,60 @@ class AppTests(unittest.TestCase):
         ws = load_workbook(result.with_name("result_r_verificat.xlsx"))["lot 3"]
         self.assertEqual((ws["E1"].value, ws["E11"].value), ("Tehnic corespunde", "Set perfuzie AB-123\n// verificat"))
 
+    def test_review_tab_choice_sets_tab_letter(self):
+        from tests.test_review import make_result
+        result = make_result(Path(self.tmp.name) / "result_s.xlsx")
+        self.app.result_var.set(str(result))
+        self.app.tabs.select(self.app.review_frame)
+        tab = self.app._open_review_tab()
+        tab.lots.selection_set("3")
+        tab._lot_selected()
+        tab.choice_var.set(rv_label("mostre"))
+        tab._choice_changed()
+        self.assertEqual((tab.suffix_var.get(), tab.lot.sheet), ("M", "lot 3 (M)"))
+        asked = []
+        tab.ask_alternative_suffix = lambda: asked.append(1) or "Ad"      # окно «A или Ad?»
+        tab.choice_var.set(rv_label("alternativa"))
+        tab._choice_changed()
+        self.assertEqual((asked, tab.lot.sheet), ([1], "lot 3 (Ad)"))
+        tab.ask_alternative_suffix = lambda: None                        # «Не менять вкладку»
+        tab._choice_changed()
+        self.assertEqual(tab.lot.sheet, "lot 3 (Ad)")
+        tab.choice_var.set(rv_label("corespunde"))                       # другие решения букву не трогают
+        tab._choice_changed()
+        self.assertEqual(tab.lot.sheet, "lot 3 (Ad)")
+
+    def test_review_tab_amdm_button(self):
+        from src.amdm.cache import RegistryCache
+        from src.amdm.models import RegistryRecord
+        from tests.test_review import make_result
+        result = make_result(Path(self.tmp.name) / "result_a.xlsx")
+        amdm_db = Path(self.tmp.name) / "amdm.sqlite"
+        cache = RegistryCache(amdm_db)
+        cache.put(RegistryRecord(dm="DM000123456", model="AB-123", catalog="AB-123", producer="Producer X"), "site")
+        cache.close()
+        self.app.result_var.set(str(result))
+        self.app.tabs.select(self.app.review_frame)
+        tab = self.app._open_review_tab()
+        tab.amdm_db, tab.amdm_offline = amdm_db, True          # без сайта: по локальной копии
+        tab.lots.selection_set("3")
+        tab._lot_selected()
+        tab.check_amdm(1)                                        # кнопка «AMDM ⟳» у Beta SA
+        self.assertEqual(tab.offer.name, "Beta SA")
+        label = tab.strip.amdm_labels[1]
+        self.assertIn("проверяю", label.cget("text"))
+        for t in tab._amdm_threads:
+            t.join(5)
+        for _ in range(20):                                      # дождаться опроса потока в окне
+            self.root.update()
+            if "проверяю" not in label.cget("text"):
+                break
+            self.root.after(100)
+        self.assertIn("DM000123456 - ", label.cget("text"))
+        self.assertTrue(label.winfo_manager())                   # показан под строкой DM
+        tab.fill_offers()                                        # перерисовка колонок - результат остаётся
+        self.assertIn("DM000123456", tab.strip.amdm_labels[1].cget("text"))
+
     def test_log_sets_stage(self):
         logging.getLogger("x").info("[ANEXA22] Строк спецификаций: 260")
         self.app._poll_log()

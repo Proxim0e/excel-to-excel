@@ -15,6 +15,7 @@ CELL_BG = {GREEN: "#00B050", YELLOW: "#FFFF00", RED: "#FF0000", BLUE: "#00B0F0",
            "FFFFC000": "#FFC000", "FF92D050": "#92D050"}
 DARK = {GREEN, RED, rv.NAVY}          # на тёмной заливке - белый текст
 SELECTED = "#1565c0"
+AMDM_BG = {"verde": "#00B050", "galben": "#FFFF00", "rosu": "#FF0000", "fara DM": "#FFC000", "neverificat": "#dddddd"}
 
 
 def _bg(color: Optional[str], default: str = "#ffffff") -> str:
@@ -30,8 +31,12 @@ def money(v: Optional[float]) -> str:
 
 
 class OfferStrip:
-    def __init__(self, parent, on_select: Callable[[int], None]):
+    def __init__(self, parent, on_select: Callable[[int], None], on_amdm: Optional[Callable[[int], None]] = None):
         self.on_select = on_select
+        self.on_amdm = on_amdm                       # кнопка «AMDM» у номера DM: проверить по реестру
+        self.amdm: dict = {}                         # (лот, колонка) -> (статус | None, текст): результат проверки
+        self.amdm_labels: dict = {}                  # индекс участника -> метка результата под DM
+        self.lot: Optional[rv.Lot] = None
         self.frame = ttk.Frame(parent)
         self.canvas = tk.Canvas(self.frame, highlightthickness=0, background="#e8e8e8")
         sx = ttk.Scrollbar(self.frame, orient="horizontal", command=self.canvas.xview)
@@ -61,7 +66,7 @@ class OfferStrip:
                 system: Callable[[rv.Offer], str] = lambda o: ""):
         for child in self.inner.winfo_children():
             child.destroy()
-        self.columns, self.selected = [], None
+        self.columns, self.selected, self.amdm_labels, self.lot = [], None, {}, lot
         if lot is None:
             return
         if not lot.offers:
@@ -110,7 +115,7 @@ class OfferStrip:
         self._cell(box, ("✓ " if done else "") + (o.row1 or "—"), o.row1_color, bold=True, size=12)
         self._cell(box, f"Ofertant: {o.name}", bold=True)
         self._cell(box, o.producer or "", size=10)
-        self._cell(box, o.dm or "", o.dm_color, bold=True)
+        self._dm_row(box, i, o)
         unit = o.value / lot.quantity if o.value and lot.quantity else None
         self._cell(box, f"{money(unit)} / buc.    total {money(o.value)}")
         pct = f"{o.ratio * 100:.2f}%" if o.ratio else ""
@@ -120,6 +125,46 @@ class OfferStrip:
             self._cell(box, "система: " + system, size=9, anchor="w")
         self._clickable(box)
         return box
+
+    def _dm_row(self, box, i: int, o: rv.Offer):
+        """DM (цвет строки 4) и кнопка «AMDM» - проверить номер на сайте реестра; результат - строкой ниже."""
+        row = tk.Frame(box, background=_bg(o.dm_color))
+        row.pack(fill="x")
+        if self.on_amdm:
+            b = tk.Button(row, text="AMDM ⟳", font=("Segoe UI", 8), cursor="hand2", padx=2, pady=0,
+                          command=lambda n=i: self.on_amdm(n))
+            b.pack(side="right", padx=2, pady=1)
+            b.no_select = True
+        lab = tk.Label(row, text=o.dm or "", background=_bg(o.dm_color), foreground=_fg(o.dm_color),
+                       wraplength=COLUMN_WIDTH - 80, font=("Segoe UI", 10, "bold"), padx=4, pady=2)
+        lab.pack(fill="x")
+        if self.on_amdm:
+            lab.configure(cursor="hand2")
+            lab.bind("<Double-Button-1>", lambda e, n=i: self.on_amdm(n))
+        res = tk.Label(box, text="", font=("Segoe UI", 9), wraplength=COLUMN_WIDTH - 12, justify="left",
+                       anchor="w", padx=4)
+        res.after_row = row
+        self.amdm_labels[i] = res
+        self._show_amdm(i, o)
+
+    def _show_amdm(self, i: int, o: rv.Offer):
+        res = self.amdm_labels.get(i)
+        found = self.amdm.get((self.lot.lot_no if self.lot else None, o.col))
+        if res is None or found is None:
+            return
+        status, text = found
+        res.configure(text=text, background=AMDM_BG.get(status, "#ffffff"),
+                      foreground="#ffffff" if status in ("verde", "rosu") else "#000000")
+        if not res.winfo_ismapped():
+            res.pack(fill="x", after=res.after_row)             # сразу под строкой DM
+
+    def set_amdm(self, lot_no: int, col: int, status: Optional[str], text: str):
+        """Результат проверки AMDM участника (статус None - идёт проверка)."""
+        self.amdm[(lot_no, col)] = (status, text)
+        if self.lot and self.lot.lot_no == lot_no:
+            for i, o in enumerate(self.lot.offers):
+                if o.col == col:
+                    self._show_amdm(i, o)
 
     def _clar_column(self, col, i, c: dict) -> tk.Frame:
         box = self._box(col, i)
@@ -133,6 +178,8 @@ class OfferStrip:
 
     def _clickable(self, box):
         def bind(w):
+            if getattr(w, "no_select", False):
+                return
             w.bind("<Button-1>", lambda e, n=box.index: self.select(n, notify=True), add="+")
             w.bind("<Shift-MouseWheel>", self._wheel_x, add="+")
             for ch in w.winfo_children():
