@@ -103,6 +103,13 @@ class AppTests(unittest.TestCase):
         model.event_generate("<Button-1>")
         self.app.root.update()
         self.assertEqual((tab.strip.copied, self.app.root.clipboard_get()), ("U603-1A", "U603-1A"))
+        from src.ui.offer_strip import OfferStrip
+        parts = OfferStrip.parts
+        self.assertEqual(parts("Model: x", "CUET44S + CUET48S + CUET52S +\nCUET56S".replace("\n", " ")),
+                         ["CUET44S", "CUET48S", "CUET52S", "CUET56S"])
+        self.assertEqual(parts("Model: x", "A1, B2; C3 și D4 / E5"), ["A1", "B2", "C3", "D4", "E5"])
+        self.assertEqual(parts("Model: x", "AB-12/3"), [])                 # «/» без пробелов - часть кода
+        self.assertEqual(parts("Țara: x", "Italia, Franța"), [])            # не модель - не делим
 
     def test_review_tab_confirm_registration(self):
         """«✓ DM/ISO ок»: строка 4 без пометок AMDM, «✓ verificat», зелёная; второе нажатие снимает отметку."""

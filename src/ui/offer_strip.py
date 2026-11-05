@@ -17,6 +17,8 @@ CELL_BG = {GREEN: "#00B050", YELLOW: "#FFFF00", RED: "#FF0000", BLUE: "#00B0F0",
 DARK = {GREEN, RED, rv.NAVY}          # на тёмной заливке - белый текст
 SELECTED = "#1565c0"
 FIELD = re.compile(r"^[^\W\d][\w .()/-]{0,30}?:\s*(.+)$")   # «Producator: X», «Țara: Y», «Model: Z»
+MODEL_KEY = re.compile(r"^\s*(model|cod|catalog|ref|art)", re.IGNORECASE)
+MODEL_SPLIT = re.compile(r"\s*[+;,|&]\s*|\s+/\s+|\s+(?:și|si|şi|and|и)\s+", re.IGNORECASE)
 AMDM_BG = {"verde": "#00B050", "galben": "#FFFF00", "rosu": "#FF0000", "fara DM": "#FFC000", "neverificat": "#dddddd"}
 
 
@@ -123,6 +125,16 @@ class OfferStrip:
                 out[-1] = (f"{prev_line} {line}", f"{prev_value} {line}")
         return out
 
+    @staticmethod
+    def parts(line: str, value: str) -> List[str]:
+        """Несколько моделей / кодов в одной строке («A + B», «A, B», «A; B», «A și B», «A / B») - по отдельности.
+        Только для строк «Model / Cod / Catalog / Ref / Art»; «/» без пробелов - часть кода (AB-12/3)."""
+        if not MODEL_KEY.match(line):
+            return []
+        items = [p.strip(" .") for p in MODEL_SPLIT.split(value)]
+        items = [p for p in items if p]
+        return items if len(items) > 1 else []
+
     def copy(self, widget, value: str):
         """Значение в буфер обмена, строка на миг зеленеет."""
         widget.clipboard_clear()
@@ -144,6 +156,16 @@ class OfferStrip:
                 lab.configure(cursor="hand2")
                 lab.bind("<Button-1>", lambda e, w=lab, v=value: self.copy(w, v), add="+")
                 lab.copy_value = value
+            items = self.parts(line, value)
+            if items:                       # каждая модель - своя кнопка, по 3 в ряд
+                chips = tk.Frame(frame, background="#ffffff")
+                chips.pack(pady=(0, 2))
+                for n, item in enumerate(items):
+                    chip = tk.Label(chips, text=item + " ⧉", background="#eef3fb", relief="groove", borderwidth=1,
+                                    font=("Segoe UI", 9), padx=3, pady=0, cursor="hand2")
+                    chip.grid(row=n // 3, column=n % 3, padx=1, pady=1, sticky="ew")
+                    chip.bind("<Button-1>", lambda e, w=chip, v=item: self.copy(w, v), add="+")
+                    chip.copy_value = item
         return frame
 
     def _spec(self, box, text: str, color: Optional[str]):
