@@ -295,7 +295,7 @@ class CardForm:
         frame.pack(fill="both", expand=True, pady=(6, 0))
         bar = ttk.Frame(frame)
         bar.pack(fill="x")
-        self.docs = cd.tech_documents(self.tender_dir, self.participant, self.lot_no) if self.tender_dir else []
+        self.docs = cd.participant_documents(self.tender_dir, self.participant, self.lot_no) if self.tender_dir else []
         self.doc_var = tk.StringVar()
         self.doc_combo = ttk.Combobox(bar, textvariable=self.doc_var, state="readonly", width=55,
                                       values=[d["label"] for d in self.docs])

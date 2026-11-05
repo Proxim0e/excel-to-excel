@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from src.amdm.parse import compact, fold, model_tokens
-from src.evaluate.cards import spec_items, split_param
+from src.evaluate.cards import LONG_NAME, QUALIFIER, spec_items, split_params
 
 # Технические документы - первыми: в них параметры изделия
 DOC_ORDER = ("datasheet", "anexa22", "anexa22+23", "anexa23", "ce_doc", "iso", "amdm", "autorizatie_producator",
@@ -30,33 +30,41 @@ def _key(name: str) -> str:
     return re.sub(r"[^a-z0-9]", "", compact(name).lower())[:12]
 
 
+def _stored(name: str, value: str) -> List[Tuple[str, str]]:
+    """Параметр карточки -> как его разобрал бы split_params. Старое предзаполнение: ключ = начало текста или
+    длинная фраза («Cu cameră … aproximativ» = «3 ml») - пересобирается; короткие названия человека - как есть."""
+    if value.startswith(name) and value != "da":
+        return split_params(value)
+    if len(name) > LONG_NAME or name.startswith(("…", "..")) or QUALIFIER.search(" " + name):
+        return split_params(f"{name} {value}" if value != "da" else name)
+    return [(name, value)]
+
+
 def param_rows(params: Dict[str, str], requirement: str, offered: str = "") -> List[Dict]:
     """Строки таблицы параметров: значение карточки + варианты на выбор (из оферты и из требования лота).
     Пункты требования, которых нет в карточке, - отдельными строками с пустым значением (их легко заполнить)."""
     rows: List[Dict] = []
     seen = {}
     for name, value in (params or {}).items():
-        value = str(value)
-        # старое предзаполнение: ключ = начало текста, значение = весь текст («diametru 38 - 47mm»)
-        name2, value2 = split_param(value) if value.startswith(str(name)) and value != "da" else (name, value)
-        k = _key(name2)
-        if k in seen:
-            if value2 not in rows[seen[k]]["choices"]:
-                rows[seen[k]]["choices"].append(value2)
-            continue
-        seen[k] = len(rows)
-        rows.append({"name": name2, "value": value2, "choices": [value2] if value2 else []})
+        for name2, value2 in _stored(str(name), str(value)):
+            k = _key(name2)
+            if k in seen:
+                if value2 not in rows[seen[k]]["choices"]:
+                    rows[seen[k]]["choices"].append(value2)
+                continue
+            seen[k] = len(rows)
+            rows.append({"name": name2, "value": value2, "choices": [value2] if value2 else []})
     for source, text in (("оферта", offered), ("требование", requirement)):
         for item in spec_items(text):
-            name, value = split_param(item)
-            k = _key(name)
-            if k in seen:
-                row = rows[seen[k]]
-                if value not in row["choices"]:
-                    row["choices"].append(value)
-            elif source == "требование":
-                seen[k] = len(rows)
-                rows.append({"name": name, "value": "", "choices": [value], "required": item})
+            for name, value in split_params(item):
+                k = _key(name)
+                if k in seen:
+                    row = rows[seen[k]]
+                    if value not in row["choices"]:
+                        row["choices"].append(value)
+                elif source == "требование":
+                    seen[k] = len(rows)
+                    rows.append({"name": name, "value": "", "choices": [value], "required": item})
     for row in rows:   # «10 Hz» и «10 Hz ≤ 150 ohm» - берём полное
         longer = [c for c in row["choices"] if row["value"] and c != row["value"] and c.startswith(row["value"])]
         if longer:
@@ -344,6 +352,95 @@ def tech_documents(tender_dir: Path, participant: str, lot_no: Optional[int] = N
     rank = {t: i for i, t in enumerate(DOC_ORDER)}
     docs.sort(key=lambda d: (d["doc_type"] not in rank, rank.get(d["doc_type"], 99), d["lot_no"] != lot_no, d["name"]))
     return docs
+
+
+def clarification_dirs(tender_dir: Path) -> List[Path]:
+    """Папки уточнений тендера: <папка тендера>/Clarificari и те, что уже загружались «Уточнениями»
+    (часто на сетевом диске): путь файла минус «<Компания>/<файл>» из url «clarificari/runda N/…»."""
+    tender_dir = Path(tender_dir)
+    dirs = [tender_dir / "Clarificari"]
+    manifest = tender_dir / "manifest.sqlite"
+    if manifest.is_file():
+        con = sqlite3.connect(manifest)
+        try:
+            rows = con.execute("SELECT path, url FROM document_refs WHERE status = 'clarificare'").fetchall()
+        except sqlite3.OperationalError:          # манифест старого вида
+            rows = []
+        finally:
+            con.close()
+        for path, url in rows:
+            rel = re.sub(r"^clarificari/runda \d+/", "", url or "")
+            depth = len(rel.split("/"))
+            parents = Path(path).parents
+            if rel != url and depth <= len(parents):
+                d = parents[depth - 1]
+                if d not in dirs:
+                    dirs.append(d)
+    return [d for d in dirs if d.is_dir()]
+
+
+LOTS_IN_NAME = re.compile(r"^\s*((?:\d{1,3}\s*(?:[-–,]\s*|\s+))*\d{1,3})(?!\d)(?![.,]\d)(?=\D|$)")   # «04.09.2026» - дата
+
+
+def lots_in_name(name: str) -> set:
+    """Лоты в начале имени файла уточнения: «3-4 TDS» -> {3, 4}, «146 180 205-206 TDS» -> {146, 180, 205, 206},
+    «Lot 70_71_73» -> {70, 71, 73}."""
+    stem = re.sub(r"(?i)^\s*lot(?:ul|urile)?\s*(?:nr\.?)?\s*", "", name).replace("_", " ")
+    m = LOTS_IN_NAME.match(stem)
+    if not m:
+        return set()
+    out = set()
+    for part in re.split(r"[,\s]+(?![-–])", re.sub(r"\s*[-–]\s*", "-", m.group(1))):
+        a, _, b = part.partition("-")
+        if a.isdigit() and b.isdigit() and int(a) <= int(b) <= int(a) + 50:
+            out.update(range(int(a), int(b) + 1))
+        elif a.isdigit():
+            out.add(int(a))
+    return out
+
+
+def clarification_documents(tender_dir: Path, participant: str, lot_no: Optional[int] = None) -> List[Dict]:
+    """Документы участника из папок уточнений (Clarificari/<Компания>/…): папка ищется по названию участника,
+    файлы читаются прямо с диска - видно и то, что положили после «Уточнений». Документы этого лота - первыми."""
+    from src.clarificari import match_participant
+    if not participant or not tender_dir:
+        return []
+    manifest = Path(tender_dir) / "manifest.sqlite"
+    participants = [participant]
+    if manifest.is_file():
+        con = sqlite3.connect(manifest)
+        try:
+            participants += [r[0] for r in con.execute(
+                "SELECT DISTINCT participant FROM document_refs WHERE participant IS NOT NULL")]
+        finally:
+            con.close()
+    participants = list(dict.fromkeys(participants))
+    docs, seen = [], set()
+    for clar in clarification_dirs(Path(tender_dir)):
+        for folder in sorted(p for p in clar.iterdir() if p.is_dir()):
+            if match_participant(folder.name, participants) != participant:
+                continue
+            for path in sorted(folder.rglob("*.pdf")):
+                key = (path.name.lower(), path.stat().st_size)
+                if key in seen:                       # «Electeh» и «Electeh SRL» - одни и те же файлы
+                    continue
+                seen.add(key)
+                lots = lots_in_name(path.name)
+                docs.append({"path": path, "name": path.name, "doc_type": "clarificare", "pages": None,
+                             "has_text": True, "lot_no": lot_no if lot_no in lots else None, "lots": lots,
+                             "label": f"Уточнение{' (этот лот)' if lot_no in lots else ''}: "
+                                      f"{folder.name}/{path.relative_to(folder).as_posix()}"})
+    docs.sort(key=lambda d: (lot_no not in d["lots"], "tds" not in d["name"].lower(), d["name"].lower()))
+    return docs
+
+
+def participant_documents(tender_dir: Path, participant: str, lot_no: Optional[int] = None) -> List[Dict]:
+    """Для выбора в карточке: уточнения по этому лоту, документы оферты (технические - первыми), остальные
+    уточнения. Файл уточнения, уже записанный в манифест, не повторяется."""
+    clar = clarification_documents(tender_dir, participant, lot_no)
+    names = {d["name"].lower() for d in clar}
+    offer = [d for d in tech_documents(tender_dir, participant, lot_no) if d["name"].lower() not in names]
+    return [d for d in clar if d["lot_no"]] + offer + [d for d in clar if not d["lot_no"]]
 
 
 _TEXT_CACHE: Dict[str, str] = {}
