@@ -19,6 +19,7 @@ SELECTED = "#1565c0"
 FIELD = re.compile(r"^[^\W\d][\w .()/-]{0,30}?:\s*(.+)$")   # «Producator: X», «Țara: Y», «Model: Z»
 MODEL_KEY = re.compile(r"^\s*(model|cod|catalog|ref|art)", re.IGNORECASE)
 MODEL_SPLIT = re.compile(r"\s*[+;,|&]\s*|\s+/\s+|\s+(?:și|si|şi|and|и)\s+", re.IGNORECASE)
+CODE_WORD = re.compile(r"\d")
 AMDM_BG = {"verde": "#00B050", "galben": "#FFFF00", "rosu": "#FF0000", "fara DM": "#FFC000", "neverificat": "#dddddd"}
 
 
@@ -133,6 +134,10 @@ class OfferStrip:
             return []
         items = [p.strip(" .") for p in MODEL_SPLIT.split(value)]
         items = [p for p in items if p]
+        if len(items) == 1:             # только пробелы / переносы: делим, если каждое слово - код (есть цифра)
+            words = items[0].split()
+            if len(words) > 1 and all(CODE_WORD.search(w) and len(w) >= 3 for w in words):
+                items = words
         return items if len(items) > 1 else []
 
     def copy(self, widget, value: str):
@@ -157,13 +162,15 @@ class OfferStrip:
                 lab.bind("<Button-1>", lambda e, w=lab, v=value: self.copy(w, v), add="+")
                 lab.copy_value = value
             items = self.parts(line, value)
-            if items:                       # каждая модель - своя кнопка, по 3 в ряд
+            if items:                       # каждая модель - своя кнопка, по 1-3 в ряд
                 chips = tk.Frame(frame, background="#ffffff")
                 chips.pack(pady=(0, 2))
+                longest = max(len(x) for x in items)
+                per_row = 3 if longest <= 9 else 2 if longest <= 14 else 1     # длинные коды - по одному
                 for n, item in enumerate(items):
                     chip = tk.Label(chips, text=item + " ⧉", background="#eef3fb", relief="groove", borderwidth=1,
                                     font=("Segoe UI", 9), padx=3, pady=0, cursor="hand2")
-                    chip.grid(row=n // 3, column=n % 3, padx=1, pady=1, sticky="ew")
+                    chip.grid(row=n // per_row, column=n % per_row, padx=1, pady=1, sticky="ew")
                     chip.bind("<Button-1>", lambda e, w=chip, v=item: self.copy(w, v), add="+")
                     chip.copy_value = item
         return frame
