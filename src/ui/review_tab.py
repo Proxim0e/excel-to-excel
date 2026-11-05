@@ -349,7 +349,10 @@ class ReviewTab:
         self._wait_save()
         o = self.lot.offers[index]
         new = None if self.book.registration_confirmed(o) == kind else kind
-        self.book.confirm_registration(self.lot, o, new)
+        if not self.book.confirm_registration(self.lot, o, new):
+            self.state_var.set(f"{o.name}: номера DM нет ни в строке 4, ни в исходном файле - впишите его "
+                               f"в Excel или выберите «✓ ISO ок»")
+            return
         self.strip.amdm.pop((self.lot.lot_no, o.col), None)     # старый итог AMDM под номером больше не нужен
         logger.info(f"[REVIEW] {self.lot.sheet}, {o.name}: " + {
             "dm": "регистрация по DM проверена - в порядке",

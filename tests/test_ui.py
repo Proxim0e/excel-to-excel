@@ -88,9 +88,12 @@ class AppTests(unittest.TestCase):
         tab = self.app._open_review_tab()
         tab.lots.selection_set("3")
         tab._lot_selected()
+        tab.confirm_registration(1, "dm")                        # номера DM нет нигде - отметка не ставится
+        self.assertIsNone(tab.book.registration_confirmed(tab.lot.offers[1]))
+        self.assertIn("номера DM нет", tab.state_var.get())
         tab.confirm_registration(1, "iso")
         o = tab.lot.offers[1]
-        self.assertEqual(o.dm, f"ISO 13485\n// cere certificat\n{REG_OK}")
+        self.assertEqual(o.dm, f"ISO 13485\n// cere certificat\n{REG_OK} ISO")
         self.assertEqual(o.dm_color, GREEN)
         tab.save()
         self.assertEqual(openpyxl.load_workbook(tab.book.target)["lot 3"]["G4"].value, o.dm)
@@ -101,11 +104,20 @@ class AppTests(unittest.TestCase):
         tab.book.sheet(tab.lot)["E4"] = "DM000123456\nRg04-000260 01-11-2022\n// Модель не найдена"
         alfa.dm = tab.book.sheet(tab.lot)["E4"].value
         tab.confirm_registration(0, "dm")
-        self.assertEqual(tab.lot.offers[0].dm, f"DM000123456\nRg04-000260 01-11-2022\n{REG_OK}")
+        self.assertEqual(tab.lot.offers[0].dm, f"DM000123456\nRg04-000260 01-11-2022\n{REG_OK} DM")
         self.assertEqual(tab.book.registration_confirmed(tab.lot.offers[0]), "dm")
         tab.confirm_registration(0, "iso")
-        self.assertEqual(tab.lot.offers[0].dm, f"ISO 13485\n{REG_OK}")
+        self.assertEqual(tab.lot.offers[0].dm, f"ISO 13485\n{REG_OK} ISO")
         self.assertEqual(tab.book.registration_confirmed(tab.lot.offers[0]), "iso")
+        tab.confirm_registration(0, "dm")                        # обратно на DM - номер и приказ возвращаются
+        self.assertEqual(tab.lot.offers[0].dm, f"DM000123456\nRg04-000260 01-11-2022\n{REG_OK} DM")
+        tab.confirm_registration(0, "dm")                        # нажатие на выбранную - снять
+        self.assertIsNone(tab.book.registration_confirmed(tab.lot.offers[0]))
+        # после перезапуска (памяти нет) номер DM берётся из исходного result-файла
+        tab.confirm_registration(0, "iso")
+        tab.book._removed_dm.clear()
+        tab.confirm_registration(0, "dm")
+        self.assertEqual(tab.lot.offers[0].dm, f"DM000123456\n{REG_OK} DM")
 
     def test_review_tab_choice_sets_tab_letter(self):
         from tests.test_review import make_result

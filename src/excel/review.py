@@ -204,6 +204,7 @@ class ReviewBook:
         self.source = self.target if self.target.is_file() else self.result
         self.wb = load_workbook(self.source)
         self.dirty = False
+        self._removed_dm: Dict[Tuple[int, int], List[str]] = {}   # номера DM, убранные «ISO ок» (для «DM ок»)
         self.reread()
         self.restore_blue()
 
@@ -252,32 +253,73 @@ class ReviewBook:
             offer.spec = spec.value
         self.dirty = True
 
-    def confirm_registration(self, lot: Lot, offer: Offer, kind: Optional[str] = "dm"):
-        """Человек проверил регистрацию сам; строка 4 - без пометок проверки AMDM, с «✓ verificat», зелёная.
-        kind: "dm" - основание номер DM (номера и приказы остаются); "iso" - основание ISO / CE: номера DM и
-        приказы убираются (строка 4 - сертификаты, по умолчанию «ISO 13485»); None - снять отметку
-        (убранные номера DM не возвращаются, цвет - до следующей проверки AMDM)."""
+    def confirm_registration(self, lot: Lot, offer: Offer, kind: Optional[str] = "dm") -> bool:
+        """Человек проверил регистрацию сам; строка 4 - без пометок проверки AMDM, зелёная, с отметкой основания
+        «✓ verificat DM» / «✓ verificat ISO» (по ней кнопка и проверка AMDM знают, что выбрано).
+        kind: "dm" - основание номер DM (если номера убрал «ISO ок» - возвращаются из памяти или исходного
+        result-файла); "iso" - основание ISO / CE: номера DM и приказы убираются (по умолчанию «ISO 13485»);
+        None - снять отметку. False - «DM ок», а номера DM нет нигде."""
         from src.amdm.mark import REG_OK, program_note
         cell = self.sheet(lot).cell(row=ROW_DM, column=offer.col)
-        lines = [l for l in str(cell.value or "").split("\n") if l.strip() and l.strip() != REG_OK]
+        lines = [l for l in str(cell.value or "").split("\n") if l.strip() and not l.strip().startswith(REG_OK)]
+        key = (lot.lot_no, offer.col)
         if kind:
             lines = [l for l in lines if not program_note(l)]
+            dm_lines = [l for l in lines if DM_LINE.match(l)]
             if kind == "iso":
+                if dm_lines:
+                    self._removed_dm[key] = dm_lines
                 lines = [l for l in lines if not DM_LINE.match(l)] or ["ISO 13485"]
-            lines.append(REG_OK)
+            elif not dm_lines:
+                back = self._removed_dm.get(key) or self._original_dm_lines(lot, offer)
+                if not back:
+                    return False
+                lines = back + [l for l in lines if l.strip() != "ISO 13485"]
+            lines.append(f"{REG_OK} {kind.upper()}")
             cell.fill = PatternFill("solid", fgColor=GREEN)
         cell.value = "\n".join(lines) or None
         offer.dm, offer.dm_color = str(cell.value or "").strip(), _rgb(cell)
         self.dirty = True
+        return True
+
+    def _original_dm_lines(self, lot: Lot, offer: Offer) -> List[str]:
+        """Номер DM и приказ этого участника из исходного result-файла (до _verificat)."""
+        orig = self.result
+        if orig.stem.endswith("_verificat"):
+            orig = orig.with_name(orig.stem[:-len("_verificat")] + ".xlsx")
+        if not orig.is_file() or orig == self.target:
+            return []
+        wb = None
+        try:
+            wb = load_workbook(orig, read_only=True)      # открыть, прочитать одну ячейку и закрыть (файл не держим)
+            name = next((n for n in wb.sheetnames
+                         if re.fullmatch(rf"lot {lot.lot_no}(?:\s*\(.*\))?", n.strip(), re.IGNORECASE)), None)
+            if name is None:
+                return []
+            ws = wb[name]
+            if str(ws.cell(row=ROW_NAME, column=offer.col).value or "").split(":", 1)[-1].strip() != offer.name:
+                return []
+            value = str(ws.cell(row=ROW_DM, column=offer.col).value or "")
+        except Exception:
+            return []
+        finally:
+            if wb is not None:
+                wb.close()
+        return [l for l in value.split("\n") if DM_LINE.match(l)]
 
     @staticmethod
     def registration_confirmed(offer: Offer) -> Optional[str]:
         """Отметка человека в строке 4: "dm" / "iso" / None."""
         from src.amdm.mark import REG_OK
-        text = offer.dm or ""
-        if REG_OK not in text:
-            return None
-        return "dm" if any(DM_LINE.match(l) and DM_NUMBER.search(l) for l in text.split("\n")) else "iso"
+        for line in (offer.dm or "").split("\n"):
+            s = line.strip()
+            if s.startswith(REG_OK):
+                tail = s[len(REG_OK):].strip().lower()
+                if tail in ("dm", "iso"):
+                    return tail
+                # отметка без основания (05.11.2026, одна кнопка) - по номеру DM в строке
+                return "dm" if any(DM_LINE.match(l) and DM_NUMBER.search(l) for l in offer.dm.split("\n")) else "iso"
+        return None
 
     def set_tab(self, lot: Lot, color: Optional[str] = None, suffix: Optional[str] = None) -> str:
         """Вкладка лота: цвет (по умолчанию - итог решений) и суффикс в имени листа «lot 9 (M)»."""
