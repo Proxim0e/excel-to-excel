@@ -45,6 +45,7 @@ class DocViewer:
         se.pack(side="left")
         se.bind("<Return>", lambda e: self.find_next())
         ttk.Button(bar, text="Найти", command=self.find_next).pack(side="left", padx=2)
+        ttk.Button(bar, text="Копировать", command=self.copy_search).pack(side="left", padx=2)
         self.hits_var = tk.StringVar()
         ttk.Label(bar, textvariable=self.hits_var, foreground="#555").pack(side="left", padx=4)
 
@@ -146,6 +147,20 @@ class DocViewer:
         t.tag_add("cur", pos, f"{pos}+{len(query)}c")
         t.see(pos)
         self.hits_var.set(f"{self.hit_pos + 1}/{len(self.hits)}")
+
+    def copy_search(self) -> str:
+        """Текст поиска (код модели, номер DM) - в буфер обмена; поле пустое - выделенный текст документа."""
+        text = self.search_var.get().strip()
+        if not text:
+            try:
+                text = self.text.get("sel.first", "sel.last").strip()
+            except tk.TclError:
+                text = ""
+        if text:
+            self.frame.clipboard_clear()
+            self.frame.clipboard_append(text)
+            self.hits_var.set("скопировано")
+        return text
 
     def open_pdf(self):
         index = self.cur

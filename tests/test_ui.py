@@ -351,6 +351,9 @@ class AppTests(unittest.TestCase):
         self.assertEqual(v.shown, [])
         v.name_var.set("")
         self.assertEqual(len(v.shown), 4)
+        v.search_var.set("U223-11BE")                            # «Копировать» - текст поиска в буфер
+        self.assertEqual(v.copy_search(), "U223-11BE")
+        self.assertEqual(self.root.clipboard_get(), "U223-11BE")
 
     def test_empty_tender_field_asks_before_parent_file(self):
         from unittest import mock
