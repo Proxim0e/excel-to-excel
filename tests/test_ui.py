@@ -73,6 +73,30 @@ class AppTests(unittest.TestCase):
         ws = load_workbook(result.with_name("result_r_verificat.xlsx"))["lot 3"]
         self.assertEqual((ws["E1"].value, ws["E11"].value), ("Tehnic corespunde", "Set perfuzie AB-123\n// verificat"))
 
+    def test_review_tab_confirm_registration(self):
+        """«✓ DM/ISO ок»: строка 4 без пометок AMDM, «✓ verificat», зелёная; второе нажатие снимает отметку."""
+        import openpyxl
+        from tests.test_review import make_result
+        from src.amdm.mark import GREEN, REG_OK
+        path = Path(self.tmp.name) / "result_a.xlsx"
+        make_result(path)
+        wb = openpyxl.load_workbook(path)
+        wb["lot 3"]["G4"] = "ISO 13485\n// Номер DM в оферте не указан\n// cere certificat"
+        wb.save(path)
+        self.app.result_var.set(str(path))
+        self.app.tabs.select(self.app.review_frame)
+        tab = self.app._open_review_tab()
+        tab.lots.selection_set("3")
+        tab._lot_selected()
+        tab.confirm_registration(1)
+        o = tab.lot.offers[1]
+        self.assertEqual(o.dm, f"ISO 13485\n// cere certificat\n{REG_OK}")
+        self.assertEqual(o.dm_color, GREEN)
+        tab.save()
+        self.assertEqual(openpyxl.load_workbook(tab.book.target)["lot 3"]["G4"].value, o.dm)
+        tab.confirm_registration(1)
+        self.assertEqual(tab.lot.offers[1].dm, "ISO 13485\n// cere certificat")
+
     def test_review_tab_choice_sets_tab_letter(self):
         from tests.test_review import make_result
         result = make_result(Path(self.tmp.name) / "result_s.xlsx")

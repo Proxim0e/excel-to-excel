@@ -27,6 +27,16 @@ SEVERITY = {GREEN: 0, YELLOW: 1, RED: 2}
 REPAINTABLE = {None, "00000000", "FF00B0F0", GREEN, YELLOW, RED}
 KEEP_TAB = {"FF001F4D", "001F4D"}  # «не состоялась»
 NOT_REGISTERED = "// nu este înregistrat în AMDM"
+BLUE = "FF00B0F0"
+BLUE_DECISION = re.compile(r"alternativ|mostre", re.IGNORECASE)    # строка 1 с голубым решением
+# Человек проверил регистрацию сам (кнопка «✓ ок» у номера DM): строка 4 зелёная, AMDM её больше не трогает
+REG_OK = "✓ verificat"
+
+
+def program_note(line: str) -> bool:
+    """Пометка, которую дописала проверка AMDM (по-русски или «nu este înregistrat»), а не человек."""
+    s = line.strip()
+    return s.startswith("//") and (bool(re.search(r"[А-Яа-яЁё]", s)) or s.startswith(NOT_REGISTERED))
 ROW_STATUS, ROW_DM = 1, 4
 
 
@@ -92,6 +102,8 @@ def mark_workbook(wb, results: List[CheckResult]) -> Dict[str, int]:
         ws = wb[sheet]
         color = STATUS_COLOR[status]
         cell = ws.cell(row=ROW_DM, column=col)
+        if REG_OK in str(cell.value or ""):         # подтверждено человеком - не трогаем
+            continue
         cell.value = row4_text(cell.value, rs)
         old = cell.alignment
         cell.alignment = Alignment(horizontal=old.horizontal, vertical=old.vertical, wrap_text=True)
@@ -99,7 +111,12 @@ def mark_workbook(wb, results: List[CheckResult]) -> Dict[str, int]:
 
         head = ws.cell(row=ROW_STATUS, column=col)
         current = _rgb(head)
-        if current in REPAINTABLE and SEVERITY[color] > SEVERITY.get(current, -1):
+        if BLUE_DECISION.search(str(head.value or "")):
+            # решение «Alternativa» / «… (mostre)» - голубое по кодбуку, AMDM его не перекрашивает
+            # (и возвращает голубой, если его перекрасил прежний запуск)
+            if current != BLUE:
+                head.fill = PatternFill("solid", fgColor=BLUE)
+        elif current in REPAINTABLE and SEVERITY[color] > SEVERITY.get(current, -1):
             head.fill = PatternFill("solid", fgColor=color)
         touched_sheets.add(sheet)
 

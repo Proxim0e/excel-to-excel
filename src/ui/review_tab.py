@@ -122,7 +122,8 @@ class ReviewTab:
         self.req.pack(fill="x", pady=(2, 4))
 
         # участники колонками, как в Excel (клик - выбор участника)
-        self.strip = OfferStrip(top, lambda i: self._offer_selected(i), on_amdm=self.check_amdm)
+        self.strip = OfferStrip(top, lambda i: self._offer_selected(i), on_amdm=self.check_amdm,
+                                on_confirm=self.confirm_registration)
         tbody = self.strip.frame
         tbody.pack(fill="both", expand=True)     # перепаковывается ниже: решение и сообщение - всегда видны
         self.detail_var = tk.StringVar()      # полностью: причины системы и уточнения выбранного участника
@@ -327,7 +328,8 @@ class ReviewTab:
             rv.attach_system(self.book.lots, self.app.kb, self.tender_id)
         for r in results:                       # итог и под кнопкой «AMDM ⟳» у номера
             lot_no = int(re.sub(r"\D", "", r.offer.sheet) or 0)
-            if r.status != IN_PROGRESS_STATUS:
+            from src.amdm.mark import REG_OK
+            if r.status != IN_PROGRESS_STATUS and REG_OK not in (r.offer.raw_row4 or ""):
                 self.strip.set_amdm(lot_no, r.offer.column, r.status,
                                     f"AMDM: {r.dm or 'без DM'} - {r.status}: {'; '.join(r.reasons)}")
         self.book.dirty = True
@@ -337,6 +339,23 @@ class ReviewTab:
         if keep is not None and self.book.lot(keep):
             self.show_lot(self.book.lot(keep))
         return results
+
+    def confirm_registration(self, index: int):
+        """«✓ DM/ISO ок»: регистрацию (DM или ISO / CE) проверил человек - строка 4 зелёная, «✓ verificat»;
+        повторное нажатие снимает отметку. Сначала регистрация, потом решение по технике."""
+        if not (self.book and self.lot) or not (0 <= index < len(self.lot.offers)):
+            return
+        self._wait_save()
+        o = self.lot.offers[index]
+        ok = not self.book.registration_confirmed(o)
+        self.book.confirm_registration(self.lot, o, ok)
+        self.strip.amdm.pop((self.lot.lot_no, o.col), None)     # старый итог AMDM под номером больше не нужен
+        logger.info(f"[REVIEW] {self.lot.sheet}, {o.name}: "
+                    + ("DM / ISO проверены - в порядке" if ok else "отметка «DM / ISO проверены» снята"))
+        self.fill_offers()
+        self._offer_selected(index)
+        self.state_var.set(f"лист: {self.lot.sheet} (не сохранено)")
+        self.save_async()
 
     def check_amdm(self, index: int):
         """Проверить номер DM участника на сайте реестра AMDM (в фоне); итог - строкой под DM и в сообщении."""
@@ -390,9 +409,7 @@ class ReviewTab:
             act.finish(("amdm",) + key, f"{e.text if e else 'AMDM'} → {status}",
                        ok=status != IN_PROGRESS_STATUS)
         text = "AMDM: " + "\n".join(f"{r.dm or 'без DM'} - {r.status}: {'; '.join(r.reasons)}" for r in results)
-        self.strip.set_amdm(lot_no, col, status, text)
-        if self.lot and self.lot.lot_no == lot_no and self.offer is not None and self.offer.col == col:
-            self.detail_var.set(text[:600] + "\n" + self.detail_var.get())
+        self.strip.set_amdm(lot_no, col, status, text)    # итог - только под номером DM (внизу не дублируем)
 
     def _choice(self) -> Optional[rv.Choice]:
         return next((c for c in rv.CHOICES if c.label == self.choice_var.get()), None)

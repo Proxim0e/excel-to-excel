@@ -200,6 +200,22 @@ class ReviewBook:
         self.wb = load_workbook(self.source)
         self.dirty = False
         self.reread()
+        self.restore_blue()
+
+    def restore_blue(self) -> int:
+        """Голубые решения («Alternativa», «… (mostre)»), которые проверка AMDM до 05.11.2026 перекрасила
+        в зелёный / жёлтый, - снова голубые (строка 1 и карточка участника)."""
+        from src.amdm.mark import BLUE_DECISION
+        n = 0
+        for lot in self.lots:
+            for o in lot.offers:
+                if BLUE_DECISION.search(o.row1 or "") and o.row1_color != BLUE:
+                    self.sheet(lot).cell(row=ROW_STATUS, column=o.col).fill = PatternFill("solid", fgColor=BLUE)
+                    o.row1_color = BLUE
+                    n += 1
+        if n:
+            self.dirty = True
+        return n
 
     def reread(self) -> None:
         """Лоты заново из книги в памяти (после пометок AMDM в строках 1/4 и цветов вкладок)."""
@@ -230,6 +246,24 @@ class ReviewBook:
             spec.value = f"{left}\n// {comment}" if left else f"// {comment}"
             offer.spec = spec.value
         self.dirty = True
+
+    def confirm_registration(self, lot: Lot, offer: Offer, ok: bool = True):
+        """Человек проверил DM / ISO сам: строка 4 - без пометок проверки AMDM, с «✓ verificat», зелёная.
+        ok=False - снять отметку (цвет остаётся до следующей проверки AMDM)."""
+        from src.amdm.mark import REG_OK, program_note
+        cell = self.sheet(lot).cell(row=ROW_DM, column=offer.col)
+        lines = [l for l in str(cell.value or "").split("\n") if l.strip() and l.strip() != REG_OK]
+        if ok:
+            lines = [l for l in lines if not program_note(l)] + [REG_OK]
+            cell.fill = PatternFill("solid", fgColor=GREEN)
+        cell.value = "\n".join(lines) or None
+        offer.dm, offer.dm_color = str(cell.value or "").strip(), _rgb(cell)
+        self.dirty = True
+
+    @staticmethod
+    def registration_confirmed(offer: Offer) -> bool:
+        from src.amdm.mark import REG_OK
+        return REG_OK in (offer.dm or "")
 
     def set_tab(self, lot: Lot, color: Optional[str] = None, suffix: Optional[str] = None) -> str:
         """Вкладка лота: цвет (по умолчанию - итог решений) и суффикс в имени листа «lot 9 (M)»."""

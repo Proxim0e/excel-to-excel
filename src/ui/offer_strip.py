@@ -31,9 +31,11 @@ def money(v: Optional[float]) -> str:
 
 
 class OfferStrip:
-    def __init__(self, parent, on_select: Callable[[int], None], on_amdm: Optional[Callable[[int], None]] = None):
+    def __init__(self, parent, on_select: Callable[[int], None], on_amdm: Optional[Callable[[int], None]] = None,
+                 on_confirm: Optional[Callable[[int], None]] = None):
         self.on_select = on_select
         self.on_amdm = on_amdm                       # кнопка «AMDM» у номера DM: проверить по реестру
+        self.on_confirm = on_confirm                 # кнопка «✓ DM/ISO ок»: регистрацию проверил человек
         self.amdm: dict = {}                         # (лот, колонка) -> (статус | None, текст): результат проверки
         self.amdm_labels: dict = {}                  # индекс участника -> метка результата под DM
         self.lot: Optional[rv.Lot] = None
@@ -130,11 +132,20 @@ class OfferStrip:
         """DM (цвет строки 4) и кнопка «AMDM» - проверить номер на сайте реестра; результат - строкой ниже."""
         row = tk.Frame(box, background=_bg(o.dm_color))
         row.pack(fill="x")
+        btns = tk.Frame(row, background=_bg(o.dm_color))
+        btns.pack(side="right", padx=2, pady=1)
         if self.on_amdm:
-            b = tk.Button(row, text="AMDM ⟳", font=("Segoe UI", 8), cursor="hand2", padx=2, pady=0,
+            b = tk.Button(btns, text="AMDM ⟳", font=("Segoe UI", 8), cursor="hand2", padx=2, pady=0,
                           command=lambda n=i: self.on_amdm(n))
-            b.pack(side="right", padx=2, pady=1)
+            b.pack(fill="x")
             b.no_select = True
+        if self.on_confirm:            # «DM / ISO проверены мной» - строка 4 зелёная, AMDM её не трогает
+            done = rv.ReviewBook.registration_confirmed(o)
+            c = tk.Button(btns, text="✓ проверено" if done else "✓ DM/ISO ок", font=("Segoe UI", 8),
+                          cursor="hand2", padx=2, pady=0, relief="sunken" if done else "raised",
+                          command=lambda n=i: self.on_confirm(n))
+            c.pack(fill="x", pady=(1, 0))
+            c.no_select = True
         lab = tk.Label(row, text=o.dm or "", background=_bg(o.dm_color), foreground=_fg(o.dm_color),
                        wraplength=COLUMN_WIDTH - 80, font=("Segoe UI", 10, "bold"), padx=4, pady=2)
         lab.pack(fill="x")

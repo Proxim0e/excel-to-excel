@@ -86,6 +86,30 @@ class MarkTests(unittest.TestCase):
         self.assertEqual(ws["E1"].fill.fgColor.rgb, "FFFFC000")
         self.assertEqual(ws.sheet_properties.tabColor.rgb, "FF001F4D")
 
+    def test_blue_decision_kept_and_restored(self):
+        """«Tehnic corespunde (mostre)» / «Alternativa» - голубые по кодбуку: AMDM их не перекрашивает,
+        а перекрашенное прежним запуском - возвращает в голубой."""
+        wb = Workbook()
+        ws = self.sheet(wb)
+        ws["E1"] = "Tehnic corespunde (mostre)"
+        ws["E1"].fill = PatternFill("solid", fgColor=mark.BLUE)
+        ws["F1"] = "Alternativa"                                  # уже перекрашен в зелёный прежней версией
+        mark.mark_workbook(wb, [result(CHECK, reasons=["x"], col=5), result(OK, col=6)])
+        self.assertEqual(ws["E1"].fill.fgColor.rgb, mark.BLUE)
+        self.assertEqual(ws["F1"].fill.fgColor.rgb, mark.BLUE)
+        self.assertEqual(ws["E4"].fill.fgColor.rgb, mark.YELLOW)  # строка 4 - по AMDM, как раньше
+
+    def test_human_confirmed_row4_untouched(self):
+        wb = Workbook()
+        ws = self.sheet(wb)
+        ws["E4"] = f"ISO 13485\n{mark.REG_OK}"
+        ws["E4"].fill = PatternFill("solid", fgColor=mark.GREEN)
+        mark.mark_workbook(wb, [result(NO_DM, None, None, ["Номер DM в оферте не указан"], col=5)])
+        self.assertEqual((ws["E4"].value, ws["E4"].fill.fgColor.rgb), (f"ISO 13485\n{mark.REG_OK}", mark.GREEN))
+        self.assertTrue(mark.program_note("// Номер DM в оферте не указан"))
+        self.assertTrue(mark.program_note("// nu este înregistrat în AMDM: DM1"))
+        self.assertFalse(mark.program_note("// cere certificat ISO"))   # пометка человека
+
 
 if __name__ == "__main__":
     unittest.main()
