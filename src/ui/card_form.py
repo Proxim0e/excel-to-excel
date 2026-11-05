@@ -57,7 +57,8 @@ class Tooltip:
 
 class CardForm:
     def __init__(self, parent: ttk.Frame, kb, q: Dict, tender_dir: Optional[Path], on_save: Callable[[Dict], None],
-                 save_text: str = "Подтвердить карточку", result: Optional[Path] = None):
+                 save_text: str = "Подтвердить карточку", result: Optional[Path] = None, layout=None):
+        self.layout = layout          # src.ui.layout.Layout - запоминание разделителей (окно); в тестах - None
         self.result = result          # result-файл текущего тендера - цена оферты участника
         self.parent, self.kb, self.q, self.on_save, self.save_text = parent, kb, q, on_save, save_text
         payload = q.get("payload") or {}
@@ -116,10 +117,19 @@ class CardForm:
         top.columnconfigure(1, weight=1)
         top.columnconfigure(3, weight=2)
 
-        self._build_agents(f)
-        self._build_prices(f)
-        self._build_params(f)
-        self._build_viewer(f)
+        # агенты и цены | параметры | документы - границы перетаскиваются (положение запоминается)
+        split = ttk.Panedwindow(f, orient="vertical")
+        split.pack(fill="both", expand=True, pady=(4, 0))
+        if self.layout is not None:
+            self.layout.pane("card", split, [0.36, 0.62])
+        upper, params, viewer = ttk.Frame(split), ttk.Frame(split), ttk.Frame(split)
+        split.add(upper, weight=2)
+        split.add(params, weight=2)
+        split.add(viewer, weight=3)
+        self._build_agents(upper)
+        self._build_prices(upper)
+        self._build_params(params)
+        self._build_viewer(viewer)
 
     def _build_agents(self, f):
         box = ttk.Frame(f)
@@ -223,7 +233,7 @@ class CardForm:
     # --- параметры -----------------------------------------------------------------------------------------------
     def _build_params(self, f):
         frame = ttk.Labelframe(f, text="Параметры изделия (значение - выбор из оферты и требования лота или свой)")
-        frame.pack(fill="x", pady=(4, 0))
+        frame.pack(fill="both", expand=True, pady=(4, 0))
         bar = ttk.Frame(frame)
         bar.pack(fill="x")
         ttk.Button(bar, text="+ параметр", command=lambda: self.add_param("", "")).pack(side="left")
@@ -240,7 +250,7 @@ class CardForm:
         canvas.bind("<Configure>", lambda e: canvas.itemconfigure(win, width=e.width))
         canvas.configure(yscrollcommand=sb.set)
         sb.pack(side="right", fill="y")
-        canvas.pack(fill="x", expand=True)
+        canvas.pack(fill="both", expand=True)
         self.params_canvas = canvas
         self.params_frame.columnconfigure(0, weight=2)
         self.params_frame.columnconfigure(1, weight=3)

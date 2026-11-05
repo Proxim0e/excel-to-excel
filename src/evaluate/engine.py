@@ -28,7 +28,7 @@ from src.manifest import MANIFEST_NAME
 
 logger = logging.getLogger(__name__)
 
-SHEET_RE = re.compile(r"lot\s*(\d+)", re.IGNORECASE)
+SHEET_RE = re.compile(r"lot\s*(\d+)\s*(?:\(\s*(?:M|A|Ad)\s*\)|M|A|Ad)?", re.IGNORECASE)   # «lot 9 (M)» - суффикс проверки
 
 
 @dataclass

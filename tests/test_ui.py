@@ -19,6 +19,11 @@ from src.evaluate import engine
 from src.history.db import connect
 
 
+def rv_label(key):
+    from src.excel.review import BY_KEY
+    return BY_KEY[key].label
+
+
 @unittest.skipUnless(HAS_TK, "нет tkinter / дисплея")
 class AppTests(unittest.TestCase):
     def setUp(self):
@@ -36,6 +41,31 @@ class AppTests(unittest.TestCase):
         self.app.kb.close()
         self.root.destroy()
         self.tmp.cleanup()
+
+    def test_review_tab_decision_saved_to_copy(self):
+        from openpyxl import load_workbook
+        from tests.test_review import make_result
+        result = make_result(Path(self.tmp.name) / "result_r.xlsx")
+        self.app.result_var.set(str(result))
+        self.assertEqual(self.app.result_short.get(), "result_r.xlsx")
+        self.app.tabs.select(self.app.review_frame)
+        tab = self.app._open_review_tab()
+        self.assertEqual(tab.lots.get_children(), ("3", "4"))
+        tab.lots.selection_set("3")
+        tab._lot_selected()
+        self.assertEqual(tab.offer.name, "Alfa SRL")
+        self.assertIn("AB-123", tab.viewer.probes)
+        tab.choice_var.set(rv_label("corespunde"))
+        tab._choice_changed()
+        tab.comment_var.set("verificat")
+        tab.apply()
+        self.assertEqual(tab.offer.name, "Beta SA")              # дальше - следующая непроверенная оферта
+        tab.filter_var.set("не проверенные мной")
+        tab.fill_lots()
+        self.assertIn("3", tab.lots.get_children())
+        tab.save()
+        ws = load_workbook(result.with_name("result_r_verificat.xlsx"))["lot 3"]
+        self.assertEqual((ws["E1"].value, ws["E11"].value), ("Tehnic corespunde", "Set perfuzie AB-123\n// verificat"))
 
     def test_log_sets_stage(self):
         logging.getLogger("x").info("[ANEXA22] Строк спецификаций: 260")

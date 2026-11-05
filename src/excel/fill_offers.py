@@ -42,7 +42,7 @@ FIRST_PARTICIPANT_COL = 5   # E
 ROW_STATUS, ROW_NAME, ROW_PRODUCER, ROW_DM, ROW_VALUE, ROW_SPEC = 1, 2, 3, 4, 8, 11
 # Цена ≥ PERCENT_THRESHOLD (130%) базы - автоматическое отклонение по закону; разметка как у человека
 PRICE_REJECTED, PRICE_REJECTED_COLOR, PRICE_REJECTED_TEXT = "price_130", "FFFF0000", "0.3"
-SHEET_RE = re.compile(r"lot\s*(\d+)", re.IGNORECASE)
+SHEET_RE = re.compile(r"lot\s*(\d+)\s*(?:\(\s*(?:M|A|Ad)\s*\)|M|A|Ad)?", re.IGNORECASE)   # «lot 9 (M)» - суффикс проверки
 EXCEL_CELL_LIMIT = 32767
 SPEC_ALIGNMENT = Alignment(wrap_text=True, vertical="top")  # длинную спецификацию читать слева сверху
 

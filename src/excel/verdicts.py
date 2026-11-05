@@ -42,7 +42,7 @@ PRICE_TEXT = "0.3"
 # Наши и шаблонные заливки - их можно перекрашивать; остальное поставил человек
 REPAINTABLE = {None, "00000000", "FF00B0F0", "00B0F0", "FF00B050", "00B050", "FFFFFF00", "FFFF00",
                "FFFF0000", "FF0000", "FF92D050"}
-SHEET_RE = re.compile(r"lot\s*(\d+)", re.IGNORECASE)
+SHEET_RE = re.compile(r"lot\s*(\d+)\s*(?:\(\s*(?:M|A|Ad)\s*\)|M|A|Ad)?", re.IGNORECASE)   # «lot 9 (M)» - суффикс проверки
 
 
 def _rgb(cell) -> Optional[str]:

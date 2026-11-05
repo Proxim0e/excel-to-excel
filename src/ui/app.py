@@ -29,7 +29,9 @@ from src.history.db import DEFAULT_DB, connect
 from src.history import sync as answers_sync
 from src.history.review import REASONS
 from src.ui import clipboard
-from src.ui.card_form import CardForm
+from src.ui.card_form import CardForm, Tooltip
+from src.ui.layout import Layout
+from src.ui.review_tab import ReviewTab
 from src.ui.cards_tab import CardsTab
 
 logger = logging.getLogger("ui")
@@ -324,40 +326,51 @@ class App:
 
     # --- разметка ------------------------------------------------------------------------------------------
     def _build(self):
-        top = ttk.Frame(self.root, padding=6)
+        # одна строка: тендер, result-файл и папка тендера (коротко, полный путь - при наведении), действия
+        top = ttk.Frame(self.root, padding=(6, 4))
         top.pack(fill="x")
-        ttk.Label(top, text="Тендер (ссылка или номер):").grid(row=0, column=0, sticky="w")
-        ttk.Entry(top, textvariable=self.url_var, width=50).grid(row=0, column=1, sticky="we")
-        ttk.Button(top, text="Запустить тендер", command=self.run_tender).grid(row=0, column=2, padx=3)
-        ttk.Label(top, text="Result:").grid(row=1, column=0, sticky="w")
-        ttk.Entry(top, textvariable=self.result_var, width=90).grid(row=1, column=1, sticky="we")
-        ttk.Button(top, text="…", width=3, command=self.pick_result).grid(row=1, column=2, sticky="w")
-        ttk.Label(top, text="Папка тендера:").grid(row=2, column=0, sticky="w")
-        ttk.Entry(top, textvariable=self.tender_var, width=90).grid(row=2, column=1, sticky="we")
-        ttk.Button(top, text="…", width=3, command=self.pick_tender).grid(row=2, column=2, sticky="w")
-        buttons = ttk.Frame(top)
-        buttons.grid(row=0, column=3, rowspan=3, padx=10)
-        ttk.Button(buttons, text="AMDM", command=self.run_amdm).pack(fill="x")
-        ttk.Button(buttons, text="Оценка", command=self.run_evaluation).pack(fill="x")
-        ttk.Button(buttons, text="Уточнения", command=self.run_clarifications).pack(fill="x")
-        ttk.Button(buttons, text="В Excel", command=self.write_excel).pack(fill="x")
-        ttk.Button(buttons, text="Стоп", command=self.stop).pack(fill="x")
-        ttk.Button(buttons, text="Настройки", command=self.open_settings).pack(fill="x", pady=(6, 0))
-        top.columnconfigure(1, weight=1)
+        ttk.Label(top, text="Тендер:").pack(side="left")
+        ttk.Entry(top, textvariable=self.url_var, width=34).pack(side="left", padx=(2, 2))
+        ttk.Button(top, text="Запустить", command=self.run_tender).pack(side="left")
+        ttk.Separator(top, orient="vertical").pack(side="left", fill="y", padx=8)
+        self.result_short, self.tender_short = tk.StringVar(), tk.StringVar()
+        for label, short, full, pick in (("Result:", self.result_short, self.result_var, self.pick_result),
+                                         ("Папка:", self.tender_short, self.tender_var, self.pick_tender)):
+            ttk.Label(top, text=label).pack(side="left")
+            name = ttk.Label(top, textvariable=short, foreground="#0645ad", width=30, anchor="w")
+            name.pack(side="left", padx=(2, 0))
+            Tooltip(name, lambda full=full: full.get())
+            ttk.Button(top, text="…", width=3, command=pick).pack(side="left", padx=(0, 6))
+        for var, short in ((self.result_var, self.result_short), (self.tender_var, self.tender_short)):
+            var.trace_add("write", lambda *_, v=var, sh=short: sh.set(Path(v.get()).name if v.get() else "(не выбран)"))
+            short.set(Path(var.get()).name if var.get() else "(не выбран)")
+        ttk.Separator(top, orient="vertical").pack(side="left", fill="y", padx=8)
+        for text, cmd in (("AMDM", self.run_amdm), ("Оценка", self.run_evaluation),
+                          ("Уточнения", self.run_clarifications), ("В Excel", self.write_excel), ("Стоп", self.stop)):
+            ttk.Button(top, text=text, command=cmd).pack(side="left", padx=1)
+        ttk.Button(top, text="Настройки", command=self.open_settings).pack(side="right")
 
+        # этап: название, прогресс, счётчики, таймер, последнее действие; ниже - цепочка этапов мелко
         status = ttk.Frame(self.root, padding=(6, 0))
         status.pack(fill="x")
-        ttk.Label(status, textvariable=self.stage_var, font=("Segoe UI", 11, "bold")).pack(side="left")
-        self.progress = ttk.Progressbar(status, length=300, mode="determinate")
-        self.progress.pack(side="left", padx=10)
+        ttk.Label(status, textvariable=self.stage_var, font=("Segoe UI", 10, "bold")).pack(side="left")
+        self.progress = ttk.Progressbar(status, length=220, mode="determinate")
+        self.progress.pack(side="left", padx=8)
         ttk.Label(status, textvariable=self.counts_var).pack(side="left")
         ttk.Label(status, textvariable=self.clock_var, foreground="#555").pack(side="left", padx=8)
-        self.stages = ttk.Label(self.root, text=" → ".join(STAGES), foreground="#777", padding=(8, 0))
+        ttk.Label(status, textvariable=self.now_var, foreground="#333").pack(side="left", fill="x", expand=True)
+        self.stages = ttk.Label(self.root, text=" → ".join(STAGES), foreground="#888", padding=(8, 0),
+                                font=("Segoe UI", 8))
         self.stages.pack(fill="x")
-        ttk.Label(self.root, textvariable=self.now_var, foreground="#333", padding=(8, 0)).pack(fill="x")
 
-        panes = ttk.Panedwindow(self.root, orient="horizontal")
-        panes.pack(fill="both", expand=True, padx=6, pady=6)
+        # вкладки: «Работа» (лог | вопросы), «Проверка лотов», «База карточек»; все границы перетаскиваются
+        self.layout = Layout(self.db.parent / "ui_layout.json")
+        self.tabs = ttk.Notebook(self.root)
+        self.tabs.pack(fill="both", expand=True, padx=6, pady=(2, 6))
+        work = ttk.Frame(self.tabs)
+        self.tabs.add(work, text="Работа")
+        panes = self.layout.pane("work", ttk.Panedwindow(work, orient="horizontal"), [0.4])
+        panes.pack(fill="both", expand=True)
         logf = ttk.Labelframe(panes, text="Лог работы")
         self.log_text = tk.Text(logf, wrap="none", font=("Consolas", 9), state="disabled")
         for tag, _, color in LOG_TAGS:
@@ -368,22 +381,48 @@ class App:
         sy.pack(side="right", fill="y")
         sx.pack(side="bottom", fill="x")
         self.log_text.pack(fill="both", expand=True)
-        panes.add(logf, weight=3)
+        panes.add(logf, weight=2)
 
-        self.tabs = ttk.Notebook(panes)
-        panes.add(self.tabs, weight=2)
-        qf = self.qf = ttk.Labelframe(self.tabs, text="Вопросы к человеку")
-        self.tabs.add(qf, text="Вопросы")
+        qf = self.qf = ttk.Labelframe(panes, text="Вопросы к человеку")
+        panes.add(qf, weight=3)
+        qpanes = self.layout.pane("questions", ttk.Panedwindow(qf, orient="horizontal"), [0.22])
+        qpanes.pack(fill="both", expand=True)
+        self.q_list = tk.Listbox(qpanes, width=30, exportselection=False)
+        self.q_list.bind("<<ListboxSelect>>", lambda e: self.show_selected())
+        qpanes.add(self.q_list, weight=1)
+        self.form = ttk.Frame(qpanes, padding=6)
+        qpanes.add(self.form, weight=4)
+
+        self.review_frame = ttk.Frame(self.tabs)
+        self.tabs.add(self.review_frame, text="Проверка лотов")
+        self.review_tab = None                    # строится при первом открытии вкладки
         self.cards_frame = ttk.Frame(self.tabs)
         self.tabs.add(self.cards_frame, text="База карточек")
-        self.cards_tab = None                     # строится при первом открытии вкладки
-        self.tabs.bind("<<NotebookTabChanged>>", lambda e: self._open_cards_tab())
-        self.root.after(100, lambda: panes.sashpos(0, int(self.root.winfo_width() * 0.45)))
-        self.q_list = tk.Listbox(qf, width=30, exportselection=False)
-        self.q_list.pack(side="left", fill="y")
-        self.q_list.bind("<<ListboxSelect>>", lambda e: self.show_selected())
-        self.form = ttk.Frame(qf, padding=6)
-        self.form.pack(side="left", fill="both", expand=True)
+        self.cards_tab = None
+        self.tabs.bind("<<NotebookTabChanged>>", lambda e: self._tab_changed())
+        self.root.protocol("WM_DELETE_WINDOW", self.close)
+
+    def close(self):
+        """Закрытие окна: несохранённые решения проверки - в _verificat.xlsx."""
+        if self.review_tab is not None and self.review_tab.book is not None and self.review_tab.book.dirty:
+            if self.review_tab.save(quiet=True) is None and not messagebox.askyesno(
+                    "Проверка лотов", "Решения не записаны в Excel (они есть в базе). Закрыть всё равно?"):
+                return
+        self.root.destroy()
+
+    def _tab_changed(self):
+        selected = self.tabs.select()
+        if selected == str(self.cards_frame):
+            self._open_cards_tab()
+        elif selected == str(self.review_frame):
+            self._open_review_tab()
+
+    def _open_review_tab(self):
+        if self.review_tab is None:
+            self.review_tab = ReviewTab(self.review_frame, self, self.layout)
+        else:
+            self.review_tab.reload_if_changed()
+        return self.review_tab
 
     # --- выбор файлов ---------------------------------------------------------------------------------------
     def pick_result(self):
@@ -914,7 +953,7 @@ class App:
                         + (f"; агенты: {card['agents']}" if card.get("agents") else ""))
             self._answered()
         self.card_form = CardForm(self.form, self.kb, q, self._card_dir(q.get("tender_id")), save,
-                                  result=self._card_result(q.get("tender_id")))
+                                  result=self._card_result(q.get("tender_id")), layout=self.layout)
 
 
 def main(argv=None) -> int:
