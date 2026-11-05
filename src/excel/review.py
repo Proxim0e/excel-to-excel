@@ -86,6 +86,11 @@ def target_path(result: Path) -> Path:
     return result.with_name(result.stem + "_verificat.xlsx")
 
 
+# строка 4: номер DM («DM000381702») и приказ под ним («Rg04-000260 01-11-2022»)
+DM_NUMBER = re.compile(r"DM\s*\d{5,}", re.IGNORECASE)
+DM_LINE = re.compile(r"^\s*(?:DM\s*\d{5,}|Rg\d+-\d+)", re.IGNORECASE)
+
+
 def _rgb(cell) -> Optional[str]:
     if cell.fill is None or cell.fill.fill_type != "solid":
         return None
@@ -247,23 +252,32 @@ class ReviewBook:
             offer.spec = spec.value
         self.dirty = True
 
-    def confirm_registration(self, lot: Lot, offer: Offer, ok: bool = True):
-        """Человек проверил DM / ISO сам: строка 4 - без пометок проверки AMDM, с «✓ verificat», зелёная.
-        ok=False - снять отметку (цвет остаётся до следующей проверки AMDM)."""
+    def confirm_registration(self, lot: Lot, offer: Offer, kind: Optional[str] = "dm"):
+        """Человек проверил регистрацию сам; строка 4 - без пометок проверки AMDM, с «✓ verificat», зелёная.
+        kind: "dm" - основание номер DM (номера и приказы остаются); "iso" - основание ISO / CE: номера DM и
+        приказы убираются (строка 4 - сертификаты, по умолчанию «ISO 13485»); None - снять отметку
+        (убранные номера DM не возвращаются, цвет - до следующей проверки AMDM)."""
         from src.amdm.mark import REG_OK, program_note
         cell = self.sheet(lot).cell(row=ROW_DM, column=offer.col)
         lines = [l for l in str(cell.value or "").split("\n") if l.strip() and l.strip() != REG_OK]
-        if ok:
-            lines = [l for l in lines if not program_note(l)] + [REG_OK]
+        if kind:
+            lines = [l for l in lines if not program_note(l)]
+            if kind == "iso":
+                lines = [l for l in lines if not DM_LINE.match(l)] or ["ISO 13485"]
+            lines.append(REG_OK)
             cell.fill = PatternFill("solid", fgColor=GREEN)
         cell.value = "\n".join(lines) or None
         offer.dm, offer.dm_color = str(cell.value or "").strip(), _rgb(cell)
         self.dirty = True
 
     @staticmethod
-    def registration_confirmed(offer: Offer) -> bool:
+    def registration_confirmed(offer: Offer) -> Optional[str]:
+        """Отметка человека в строке 4: "dm" / "iso" / None."""
         from src.amdm.mark import REG_OK
-        return REG_OK in (offer.dm or "")
+        text = offer.dm or ""
+        if REG_OK not in text:
+            return None
+        return "dm" if any(DM_LINE.match(l) and DM_NUMBER.search(l) for l in text.split("\n")) else "iso"
 
     def set_tab(self, lot: Lot, color: Optional[str] = None, suffix: Optional[str] = None) -> str:
         """Вкладка лота: цвет (по умолчанию - итог решений) и суффикс в имени листа «lot 9 (M)»."""

@@ -340,18 +340,21 @@ class ReviewTab:
             self.show_lot(self.book.lot(keep))
         return results
 
-    def confirm_registration(self, index: int):
-        """«✓ DM/ISO ок»: регистрацию (DM или ISO / CE) проверил человек - строка 4 зелёная, «✓ verificat»;
-        повторное нажатие снимает отметку. Сначала регистрация, потом решение по технике."""
+    def confirm_registration(self, index: int, kind: str = "dm"):
+        """«✓ DM ок» / «✓ ISO ок»: регистрацию проверил человек - строка 4 зелёная, «✓ verificat»; при ISO номера
+        DM убираются (основание - сертификат). Нажатие на выбранную кнопку снимает отметку.
+        Сначала регистрация, потом решение по технике."""
         if not (self.book and self.lot) or not (0 <= index < len(self.lot.offers)):
             return
         self._wait_save()
         o = self.lot.offers[index]
-        ok = not self.book.registration_confirmed(o)
-        self.book.confirm_registration(self.lot, o, ok)
+        new = None if self.book.registration_confirmed(o) == kind else kind
+        self.book.confirm_registration(self.lot, o, new)
         self.strip.amdm.pop((self.lot.lot_no, o.col), None)     # старый итог AMDM под номером больше не нужен
-        logger.info(f"[REVIEW] {self.lot.sheet}, {o.name}: "
-                    + ("DM / ISO проверены - в порядке" if ok else "отметка «DM / ISO проверены» снята"))
+        logger.info(f"[REVIEW] {self.lot.sheet}, {o.name}: " + {
+            "dm": "регистрация по DM проверена - в порядке",
+            "iso": "основание - ISO / CE, проверено; номера DM убраны",
+            None: "отметка о проверке регистрации снята"}[new])
         self.fill_offers()
         self._offer_selected(index)
         self.state_var.set(f"лист: {self.lot.sheet} (не сохранено)")
@@ -406,7 +409,8 @@ class ReviewTab:
         status = overall_status(results)
         if act:
             e = act.by_key.get(("amdm",) + key)
-            act.finish(("amdm",) + key, f"{e.text if e else 'AMDM'} → {status}",
+            base = (e.text if e else "AMDM").split(" → ")[0]      # без «→ galben → galben» от повторных нажатий
+            act.finish(("amdm",) + key, f"{base} → {status}",
                        ok=status != IN_PROGRESS_STATUS)
         text = "AMDM: " + "\n".join(f"{r.dm or 'без DM'} - {r.status}: {'; '.join(r.reasons)}" for r in results)
         self.strip.set_amdm(lot_no, col, status, text)    # итог - только под номером DM (внизу не дублируем)

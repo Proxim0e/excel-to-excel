@@ -139,13 +139,17 @@ class OfferStrip:
                           command=lambda n=i: self.on_amdm(n))
             b.pack(fill="x")
             b.no_select = True
-        if self.on_confirm:            # «DM / ISO проверены мной» - строка 4 зелёная, AMDM её не трогает
+        if self.on_confirm:     # регистрацию проверил человек: по DM или по ISO (ISO убирает номера DM)
             done = rv.ReviewBook.registration_confirmed(o)
-            c = tk.Button(btns, text="✓ проверено" if done else "✓ DM/ISO ок", font=("Segoe UI", 8),
-                          cursor="hand2", padx=2, pady=0, relief="sunken" if done else "raised",
-                          command=lambda n=i: self.on_confirm(n))
-            c.pack(fill="x", pady=(1, 0))
-            c.no_select = True
+            pair = tk.Frame(btns, background=_bg(o.dm_color))
+            pair.pack(fill="x", pady=(1, 0))
+            for kind, text in (("dm", "✓ DM ок"), ("iso", "✓ ISO ок")):
+                c = tk.Button(pair, text=text, font=("Segoe UI", 8), cursor="hand2", padx=1, pady=0,
+                              relief="sunken" if done == kind else "raised",
+                              background="#c8e6c9" if done == kind else "SystemButtonFace",
+                              command=lambda n=i, k=kind: self.on_confirm(n, k))
+                c.pack(side="left", fill="x", expand=True)
+                c.no_select = True
         lab = tk.Label(row, text=o.dm or "", background=_bg(o.dm_color), foreground=_fg(o.dm_color),
                        wraplength=COLUMN_WIDTH - 80, font=("Segoe UI", 10, "bold"), padx=4, pady=2)
         lab.pack(fill="x")
