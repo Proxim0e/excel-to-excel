@@ -51,6 +51,30 @@ class ParamTests(unittest.TestCase):
         self.assertNotIn("…ceputa cu rata de nebulizare", rows)
 
 
+TDS = """For Adult:With a special chamber designed with a nebulization rate of approximately 3 ml-10min, average particle size 2 microns -
+complete kit consisting of nebulizer mask, nebulizer chamber and 200 cm.
+* Hose: It is customizable from 100cm to 250cm connection hose made of PVC
+For Pediatric: average particle size 3.1 microns, Complete kit"""
+
+
+class DocValuesTests(unittest.TestCase):
+    def test_values_from_english_tds_for_romanian_requirement(self):
+        from src.ui.card_data import doc_values
+        rows = param_rows({"dimensiunea medie a particulelor": "≤ 5 microni"}, NEBULIZER)
+        n = doc_values(rows, [{"name": "3-4 TDS.pdf", "text": TDS}], "Masca nebulizator adult", replace_requirement=True)
+        got = {r["name"]: r["value"] for r in rows}
+        self.assertEqual(got["rata de nebulizare"], "3 ml-10min")
+        self.assertEqual(got["dimensiunea medie a particulelor"], "2 microns")    # копия требования -> из документа
+        self.assertEqual(got["tub"], "200 cm")
+        self.assertEqual(got["kit complet format din"], "")                      # не число - не подбирается
+        self.assertEqual(n, 3)
+        # подтверждённая человеком: значение не меняется, документ - в вариантах
+        rows = param_rows({"dimensiunea medie a particulelor": "≤ 5 microni"}, NEBULIZER)
+        doc_values(rows, [{"name": "3-4 TDS.pdf", "text": TDS}], "adult")
+        row = next(r for r in rows if r["name"] == "dimensiunea medie a particulelor")
+        self.assertEqual((row["value"], row["choices"][-1]), ("≤ 5 microni", "2 microns"))
+
+
 class ClarificationDocsTests(unittest.TestCase):
     def test_lots_in_file_name(self):
         self.assertEqual(lots_in_name("3-4 TDS.semnat.pdf"), {3, 4})

@@ -34,12 +34,12 @@ UNITS = {
     "min": ("time", 1), "h": ("time", 60), "ore": ("time", 60),
     "%": ("pct", 1), "°c": ("temp", 1), "c": ("temp", 1),
     "mmhg": ("press_mmhg", 1), "cmh2o": ("press_cmh2o", 1), "kpa": ("press_kpa", 1), "bar": ("press_bar", 1),
-    "bari": ("press_bar", 1), "fr": ("fr", 1), "ch": ("fr", 1), "micron": ("um", 1), "microni": ("um", 1),
+    "bari": ("press_bar", 1), "fr": ("fr", 1), "ch": ("fr", 1), "micron": ("um", 1), "microni": ("um", 1), "microns": ("um", 1),
     "µm": ("um", 1), "um": ("um", 1), "cicluri": ("cycles", 1), "pin": ("pin", 1), "buc": ("pcs", 1),
     "w": ("w", 1), "v": ("v", 1), "hz": ("hz", 1), "ohm": ("ohm", 1), "ω": ("ohm", 1), "mah": ("mah", 1),
 }
 # Длинные единицы раньше коротких: «cm h2o» раньше «cm», «mmhg» раньше «mm»
-UNIT_RX = (r"cm\s?h2o|mm\s?hg|microni|micron|cicluri|bari|bar|kpa|mah|ohm|ω|hz|ml|mm|cm|kg|fr|ch|°c|µm|um|"
+UNIT_RX = (r"cm\s?h2o|mm\s?hg|microni|microns|micron|cicluri|bari|bar|kpa|mah|ohm|ω|hz|ml|mm|cm|kg|fr|ch|°c|µm|um|"
            r"pin|buc|ore|min|m|l|g|h|w|v|%")
 NUM = r"\d+(?:[.,]\d+)?"
 MIN_WORDS = r"(?:≥|>=|>|min\.?|minim(?:a|um|ă)?|nu mai (?:mic|putin|puțin) de|cel putin|de cel putin)"

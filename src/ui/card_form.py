@@ -77,7 +77,7 @@ class CardForm:
         self.tender_dir = tender_dir
         self.entries: Dict[str, ttk.Entry] = {}
         self.param_widgets: List[Dict] = []
-        self.docs: List[Dict] = []
+        self.docs: Optional[List[Dict]] = None    # документы участника (оферта + уточнения), один раз
         self.hits: List[str] = []
         self.hit_pos = -1
         self._build()
@@ -230,6 +230,8 @@ class CardForm:
         ttk.Button(bar, text="Убрать пустые", command=self.drop_empty).pack(side="left", padx=4)
         ttk.Label(bar, text="пустые строки - пункты требования лота, которых нет в оферте",
                   foreground="#777").pack(side="left", padx=6)
+        self.doc_filled_var = tk.StringVar()
+        ttk.Label(bar, textvariable=self.doc_filled_var, foreground="#1565c0").pack(side="left", padx=6)
         canvas = tk.Canvas(frame, height=140, highlightthickness=0)
         sb = ttk.Scrollbar(frame, orient="vertical", command=canvas.yview)
         self.params_frame = ttk.Frame(canvas)
@@ -248,11 +250,20 @@ class CardForm:
                 params = json.loads(params or "{}")
             except json.JSONDecodeError:
                 params = {}
-        for row in cd.param_rows(params, self.requirement):
-            self.add_param(row["name"], row["value"], row["choices"], row.get("required"), scroll=False)
+        rows = cd.param_rows(params, self.requirement)
+        # значения из технических документов участника (TDS из уточнений, даташиты) - по величине и словам параметра
+        if self.docs is None:
+            self.docs = cd.participant_documents(self.tender_dir, self.participant, self.lot_no) if self.tender_dir else []
+        hint = " ".join(self.entries[k].get() for k in ("model", "name")) + " " + (self.lot_title or "")
+        found = cd.doc_values(rows, cd.value_documents(self.docs, cd._codes(self.values())), hint,
+                              replace_requirement=self.card.get("source") != "human")   # подтверждённую не меняем
+        self.doc_filled_var.set(f"из документов заполнено: {found}" if found else "")
+        for row in rows:
+            self.add_param(row["name"], row["value"], row["choices"], row.get("required"), scroll=False,
+                           doc=row.get("doc"))
 
     def add_param(self, name: str, value: str, choices: Optional[List[str]] = None, required: Optional[str] = None,
-                  scroll: bool = True):
+                  scroll: bool = True, doc: Optional[Dict] = None):
         r = len(self.param_widgets)
         n = ttk.Entry(self.params_frame)
         n.insert(0, name)
@@ -266,6 +277,8 @@ class CardForm:
         x.configure(command=lambda: self.remove_param(item))
         if required:
             Tooltip(n, lambda: "Требование лота: " + required)
+        if doc:                                   # откуда значение из документа
+            Tooltip(v, lambda: f"Из документа «{doc['name']}»: {doc['value']}\n«{doc['quote']}»")
         self.param_widgets.append(item)
         if scroll:
             self.params_canvas.update_idletasks()
@@ -295,7 +308,8 @@ class CardForm:
         frame.pack(fill="both", expand=True, pady=(6, 0))
         bar = ttk.Frame(frame)
         bar.pack(fill="x")
-        self.docs = cd.participant_documents(self.tender_dir, self.participant, self.lot_no) if self.tender_dir else []
+        if self.docs is None:
+            self.docs = cd.participant_documents(self.tender_dir, self.participant, self.lot_no) if self.tender_dir else []
         self.doc_var = tk.StringVar()
         self.doc_combo = ttk.Combobox(bar, textvariable=self.doc_var, state="readonly", width=55,
                                       values=[d["label"] for d in self.docs])
@@ -321,7 +335,8 @@ class CardForm:
         self.doc_text.tag_configure("hit", background="#fff59d")
         self.doc_text.tag_configure("cur", background="#ffb74d")
         # только чтение, но с выделением и Ctrl+C
-        self.doc_text.bind("<Key>", lambda e: None if (e.state & 4 and e.keysym.lower() in ("c", "a")) else "break")
+        self.doc_text.bind("<Key>", lambda e: None if (e.state & 4 and (e.keysym.lower() in ("c", "a")
+                                                                         or e.keycode in (67, 65))) else "break")
         self.doc_text.bind("<ButtonRelease-1>", self._on_select)
         self.add_button = tk.Button(self.doc_text, text="+ в параметры", bg="#e3f2fd", relief="raised",
                                     command=self.add_selection)

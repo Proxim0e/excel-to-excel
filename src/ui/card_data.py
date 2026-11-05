@@ -65,11 +65,136 @@ def param_rows(params: Dict[str, str], requirement: str, offered: str = "") -> L
                 elif source == "требование":
                     seen[k] = len(rows)
                     rows.append({"name": name, "value": "", "choices": [value], "required": item})
+                if source == "требование":
+                    rows[seen[k]].setdefault("req_value", value)
     for row in rows:   # «10 Hz» и «10 Hz ≤ 150 ohm» - берём полное
         longer = [c for c in row["choices"] if row["value"] and c != row["value"] and c.startswith(row["value"])]
         if longer:
             row["value"] = max(longer, key=len)
     return rows
+
+
+# --- значения параметров из технических документов ------------------------------------------------------------
+STEM = 4                 # общие первые буквы - родственные слова: nebulizare / nebulization, particulelor / particle
+# Anexa 22/23 - перечень лотов и заявленное участником (повтор требования), не описание изделия производителем
+DOC_TYPES_FOR_VALUES = ("datasheet", "clarificare", "other", "ce_doc")
+MAX_VALUE_DOCS = 6
+
+
+# румынское слово требования -> английское в документах производителя (однокоренные находятся и так)
+RO_EN = {"suplimentar": "additional", "suplimentara": "additional", "lungime": "length", "lungimea": "length",
+         "tub": "tube", "tubul": "tube", "furtun": "hose", "sac": "bag", "sacul": "bag", "greutate": "weight",
+         "latime": "width", "latimea": "width", "inaltime": "height", "inaltimea": "height", "grosime": "thickness",
+         "marime": "size", "marimea": "size", "dimensiune": "size", "dimensiunea": "size", "rata": "rate",
+         "debit": "flow", "debitul": "flow", "presiune": "pressure", "presiunea": "pressure", "capacitate": "capacity",
+         "durata": "duration", "ac": "needle", "acul": "needle", "masca": "mask", "camera": "chamber",
+         "conector": "connector", "adaptor": "adapter", "cablu": "cable", "cablul": "cable", "hartie": "paper",
+         "rola": "roll", "pliata": "folded", "steril": "sterile", "mediu": "average", "medie": "average",
+         "particule": "particle", "particulelor": "particle", "valabilitate": "shelf", "termen": "life"}
+STOP = {"din", "sau", "and", "the", "for", "with", "are", "per", "cel", "mai", "nu", "una", "unei", "pentru", "este"}
+
+
+def _stems(text: str) -> set:
+    out = set()
+    for w in re.findall(r"[a-z]{2,}", fold(text or "").lower()):
+        if w in STOP:
+            continue
+        if len(w) >= 3:
+            out.add(w[:STEM])
+        if w in RO_EN:
+            out.add(RO_EN[w][:STEM])
+    return out
+
+
+DOC_VALUE_RE = re.compile(r"((?:[≥≤<>±~]|min\.?|max\.?|minimum|maximum)?\s*\d+(?:[.,]\d+)?"
+                          r"(?:\s*(?:[-–]|to)\s*\d+(?:[.,]\d+)?)?\s*[^\s\d]*)\s*$", re.IGNORECASE)
+
+
+def _doc_value(text: str) -> str:
+    """«nebulization rate of approximately 3 ml» -> «3 ml»; «A-60 CT 200ml» -> «200ml»: последнее значение
+    фрагмента (с «≥ / min.» и диапазоном), без подписи."""
+    m = DOC_VALUE_RE.search(text.strip(" .,;"))
+    return m.group(1).strip() if m else text
+
+
+def value_documents(docs: List[Dict], codes: List[str]) -> List[Dict]:
+    """Документы, из которых берутся значения: уточнения этого лота, даташиты, Anexa 23 - и только те, где есть
+    код модели (если он известен). Текст - только страницы с кодом модели, если код найден не везде."""
+    out, read = [], 0
+    for d in docs:
+        if d["doc_type"] not in DOC_TYPES_FOR_VALUES or (d["doc_type"] == "clarificare" and not d.get("lot_no")):
+            continue
+        read += 1
+        if read > 2 * MAX_VALUE_DOCS:                # чтение PDF с сетевого диска - не больше дюжины файлов
+            break
+        text = document_text(d["path"])
+        if text.startswith(("Файл не найден", "Не удалось", "В документе нет")):
+            continue
+        pages = re.split(r"(?=--- стр\. \d+ ---)", text)
+        hit = [pg for pg in pages if any(c in compact(pg) for c in codes)] if codes else pages
+        if codes and not hit:
+            continue
+        out.append({**d, "text": "\n".join(hit)})
+        if len(out) >= MAX_VALUE_DOCS:
+            break
+    return out
+
+
+def doc_values(rows: List[Dict], docs: List[Dict], hint: str = "", replace_requirement: bool = False) -> int:
+    """Значения параметров из текста технических документов: число той же величины, что в требовании
+    (мм, мл, микроны…), рядом со словами названия параметра (общие корни: rata de nebulizare / nebulization rate)
+    и словами модели (hint: «adult»). Лучше то, что укладывается в требование. Найденное - в варианты строки;
+    пустая строка заполняется; replace_requirement - и строка, где стоит копия требования («≤ 5 microni» ->
+    «2 microns»: карточка описывает изделие, а не запрос). Возвращает число заполненных строк."""
+    from src.anexa22.requirements import parse_constraints
+    hint_stems = _stems(hint)
+    lines = []                                      # (документ, строка, контекст из соседних строк)
+    for d in docs:
+        doc_lines = [ln.strip() for ln in d["text"].splitlines()]
+        for i, line in enumerate(doc_lines):
+            if re.search(r"\d", line):
+                lines.append((d, line, " ".join(doc_lines[max(0, i - 1):i + 2])))
+    filled = 0
+    for row in rows:
+        req_text = row.get("req_value") or next((c for c in row["choices"] if re.search(r"\d", c)), "")
+        if not re.search(r"\d", req_text):        # «da» / перечисление - не число
+            continue
+        wanted = parse_constraints(req_text)
+        if not wanted:
+            continue
+        main = next((w for w in wanted if w.kind != "exact"), wanted[0])   # «10 Hz ≤ 150 ohm» - условие в омах
+        family = main.family
+        name_stems = _stems(row["name"])
+        best = None
+        for d, line, context in lines:
+            for c in parse_constraints(line):
+                if c.family != family:
+                    continue
+                own, ctx = _stems(line), _stems(context)   # слова в строке числа весят больше соседних строк
+                score = 2 * len(name_stems & own) + len(name_stems & ctx) + len(hint_stems & ctx)
+                if main.satisfied_by(c):
+                    score += 3
+                elif main.overlaps(c):
+                    score += 1
+                if score < 2:
+                    continue
+                if not best or score > best[0]:
+                    value = _doc_value(c.text)
+                    at = line.find(value)
+                    tail = re.match(r"\s*[-–/]\s*\d+(?:[.,]\d+)?\s*[a-zµ%]+", line[at + len(value):]) if at >= 0 else None
+                    if tail:                                  # «3 ml» + «-10min»
+                        value += tail.group(0)
+                    best = (score, value, d["name"], re.sub(r"\s+", " ", context)[:200])
+        if not best:
+            continue
+        _, value, doc_name, quote = best
+        row["doc"] = {"value": value, "name": doc_name, "quote": quote}
+        if value not in row["choices"]:
+            row["choices"].append(value)
+        if not row["value"] or (replace_requirement and row["value"] == row.get("req_value")):
+            row["value"] = value
+            filled += 1
+    return filled
 
 
 # --- экономические агенты и победители ----------------------------------------------------------------------

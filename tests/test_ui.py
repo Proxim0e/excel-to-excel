@@ -159,14 +159,15 @@ class AppTests(unittest.TestCase):
         # требование лота: подсказка и строки пунктов требования
         self.assertIn("diametru", form.requirement)
         self.assertEqual([i["name"].get() for i in form.param_widgets], ["diametru", "electrod Ag/AgCl"])
-        self.assertEqual(list(form.param_widgets[0]["value"].cget("values")), ["38 - 47mm"])
+        # значение из технического документа участника: та же величина (мм) рядом со словом «diametru»
+        self.assertEqual(list(form.param_widgets[0]["value"].cget("values")), ["38 - 47mm", "40 mm"])
+        self.assertEqual(form.param_widgets[0]["value"].get(), "40 mm")
+        self.assertEqual(form.doc_filled_var.get(), "из документов заполнено: 1")
         # документ участника открыт, найден код модели
         self.assertIn("Diametru: 40 mm", form.doc_text.get("1.0", "end"))
         self.assertEqual(form.search_var.get(), "SF01")
         self.assertEqual(form.hits_var.get(), "1/1")
-        # выделенный текст -> в пустую строку того же параметра
-        form.add_selection("Diametru: 40 mm")
-        self.assertEqual(form.param_widgets[0]["value"].get(), "40 mm")
+        # выделенный текст -> в параметры
         form.add_selection("Impedanta 10 Hz 120 ohm")
         self.assertEqual(form.params(), {"diametru": "40 mm", "Impedanta": "10 Hz 120 ohm"})
         # экономические агенты: текущий участник выбран, можно дописать
