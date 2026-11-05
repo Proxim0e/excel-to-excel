@@ -1,9 +1,11 @@
 """
-Просмотр документов участника: выбор документа (оферта + уточнения), «Открыть PDF», поиск с подсветкой.
+Просмотр документов участника: выбор документа (оферта + уточнения) с поиском по названию, «Открыть PDF»,
+поиск по тексту с подсветкой.
 Используется во вкладке «Проверка лотов»; при открытии документа сразу ищется код модели / номер DM.
 """
 import os
 import tkinter as tk
+import unicodedata
 from pathlib import Path
 from tkinter import messagebox, ttk
 from typing import Callable, Dict, List, Optional, Sequence
@@ -17,14 +19,25 @@ class DocViewer:
         self.probes: Sequence[str] = ()
         self.hits: List[str] = []
         self.hit_pos = -1
+        self.shown: List[int] = []        # документы в списке (после поиска по названию) -> индексы self.docs
+        self.cur = -1                     # открытый документ (индекс self.docs)
         self.on_selection = on_selection
         self.frame = ttk.Frame(parent)
         bar = ttk.Frame(self.frame)
         bar.pack(fill="x")
+        ttk.Label(bar, text="Документ:").pack(side="left", padx=(0, 2))
+        self.name_var = tk.StringVar()          # поиск по названию документа
+        ne = ttk.Entry(bar, textvariable=self.name_var, width=16)
+        ne.pack(side="left")
+        self.name_var.trace_add("write", lambda *_: self.filter_docs())
+        ne.bind("<Return>", lambda e: self.filter_docs(open_first=True))
+        ttk.Button(bar, text="×", width=2, command=lambda: self.name_var.set("")).pack(side="left")
         self.doc_var = tk.StringVar()
-        self.combo = ttk.Combobox(bar, textvariable=self.doc_var, state="readonly", width=60)
-        self.combo.pack(side="left")
-        self.combo.bind("<<ComboboxSelected>>", lambda e: self.load(self.combo.current()))
+        self.combo = ttk.Combobox(bar, textvariable=self.doc_var, state="readonly", width=56)
+        self.combo.pack(side="left", padx=(2, 0))
+        self.combo.bind("<<ComboboxSelected>>", lambda e: self._combo_picked())
+        self.count_var = tk.StringVar()
+        ttk.Label(bar, textvariable=self.count_var, foreground="#555").pack(side="left", padx=2)
         ttk.Button(bar, text="Открыть PDF", command=self.open_pdf).pack(side="left", padx=4)
         ttk.Label(bar, text="Поиск:").pack(side="left", padx=(10, 2))
         self.search_var = tk.StringVar()
@@ -51,14 +64,45 @@ class DocViewer:
     def set_docs(self, docs: List[Dict], probes: Sequence[str] = ()):
         """Документы участника; probes - что искать сразу (код модели, номер DM)."""
         self.docs, self.probes = docs, [p for p in probes if p and len(p) >= 3]
-        self.combo.configure(values=[d["label"] for d in docs])
         self.search_var.set("")
-        if docs:
-            self.combo.current(0)
-            self.load(0)
-        else:
+        self.cur = -1
+        self.filter_docs(open_first=True)       # поиск по названию остаётся между участниками
+        if docs and self.cur < 0:               # по названию ничего - весь список, первый документ
+            self.name_var.set("")
+        if not docs:
             self.doc_var.set("")
             self._set("Документов участника нет (нет манифеста тендера или папки уточнений).")
+
+    @staticmethod
+    def _plain(text: str) -> str:
+        """Без регистра и диакритики: «Fișa tehnică» ищется как «fisa tehnica»."""
+        decomposed = unicodedata.normalize("NFKD", text.lower())
+        return "".join(c for c in decomposed if not unicodedata.combining(c))
+
+    @classmethod
+    def _haystack(cls, doc: Dict) -> str:
+        return cls._plain(f"{doc.get('label', '')} {Path(str(doc.get('path', ''))).name}")
+
+    def filter_docs(self, open_first: bool = False):
+        """Список документов - только с названием, где есть все слова поиска; открытый остаётся, если подходит."""
+        words = self._plain(self.name_var.get()).split()
+        self.shown = [i for i, d in enumerate(self.docs) if all(w in self._haystack(d) for w in words)]
+        self.combo.configure(values=[self.docs[i]["label"] for i in self.shown])
+        self.count_var.set(f"{len(self.shown)} из {len(self.docs)}" if words else "")
+        if not self.shown:
+            self.doc_var.set("")
+            return
+        if self.cur in self.shown and not open_first:
+            self.combo.current(self.shown.index(self.cur))
+            return
+        if open_first or self.cur not in self.shown:
+            self.combo.current(0)
+            self.load(self.shown[0])
+
+    def _combo_picked(self):
+        i = self.combo.current()
+        if 0 <= i < len(self.shown):
+            self.load(self.shown[i])
 
     def _set(self, text: str):
         self.text.delete("1.0", "end")
@@ -68,6 +112,7 @@ class DocViewer:
     def load(self, index: int):
         if not (0 <= index < len(self.docs)):
             return
+        self.cur = index
         self._set(cd.document_text(self.docs[index]["path"]))
         if not self.search_var.get().strip():
             for probe in self.probes:
@@ -103,7 +148,7 @@ class DocViewer:
         self.hits_var.set(f"{self.hit_pos + 1}/{len(self.hits)}")
 
     def open_pdf(self):
-        index = self.combo.current()
+        index = self.cur
         if 0 <= index < len(self.docs):
             path = self.docs[index]["path"]
             if Path(path).is_file():

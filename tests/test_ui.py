@@ -251,6 +251,73 @@ class AppTests(unittest.TestCase):
             self.assertEqual((self.app.mode, self.app.url_var.get()), ("tender", "21641880"))
             self.assertIsNone(self.app.start_win)
 
+    def test_continue_picks_working_file_of_this_tender(self):
+        """«Скачанный тендер»: не последняя копия (_evaluare / _AMDM), а <база>_verificat.xlsx; потом - запомненный."""
+        from unittest import mock
+        from src.ui import app as ui
+        base = Path(self.tmp.name)
+        (base / "downloads" / "21641880").mkdir(parents=True)
+        (base / "downloads" / "21641880" / "manifest.sqlite").write_bytes(b"")
+        res = base / "res"
+        res.mkdir()
+        for name in ("result_05.11.2026_10-44-15.xlsx", "result_05.11.2026_10-44-15_verificat.xlsx",
+                     "result_05.11.2026_10-44-15_verificat_evaluare.xlsx"):
+            (res / name).write_bytes(b"x")
+        latest = res / "result_05.11.2026_10-44-15_verificat_evaluare.xlsx"
+        self.assertEqual(ui.base_result(res / "result_1_verificat_evaluare_AMDM.xlsx").name, "result_1.xlsx")
+        self.assertEqual(ui.base_result(res / "result_1_verificat.bak.xlsx").name, "result_1.xlsx")
+        with mock.patch.object(ui, "BASE_DIR", base), mock.patch.object(ui, "latest_result", return_value=latest):
+            self.app.start_folder = tk.StringVar(value="21641880")
+            self.assertTrue(self.app.apply_start("continue"))
+            self.assertEqual(Path(self.app.result_var.get()).name, "result_05.11.2026_10-44-15_verificat.xlsx")
+            # человек выбрал другой файл этого тендера - при следующем продолжении берётся он
+            other = res / "result_06.11.2026_09-00-00.xlsx"
+            other.write_bytes(b"x")
+            self.app.result_var.set(str(other))
+            self.app.result_var.set("")
+            self.assertTrue(self.app.apply_start("continue"))
+            self.assertEqual(Path(self.app.result_var.get()), other)
+
+    def test_close_stops_running_process_after_asking(self):
+        from unittest import mock
+        from src.ui import app as ui
+        proc = mock.Mock()
+        proc.poll.return_value = None
+        self.app.proc, self.app.task_title = proc, "AMDM"
+        with mock.patch.object(ui.messagebox, "askyesno", return_value=False) as ask:
+            self.app.close()
+        self.assertIn("AMDM", ask.call_args[0][1])
+        proc.terminate.assert_not_called()                       # «Нет» - окно осталось, процесс идёт
+        with mock.patch.object(ui.messagebox, "askyesno", return_value=True), \
+                mock.patch.object(self.root, "destroy") as destroy:
+            self.app.close()
+        proc.terminate.assert_called_once()
+        destroy.assert_called_once()
+
+    def test_doc_viewer_search_by_name(self):
+        from src.ui.doc_viewer import DocViewer
+        tmp = Path(self.tmp.name)
+        docs = []
+        for label in ("Oferta tehnica", "Certificat ISO 13485", "Fișa tehnică lotul 147", "Declaratie CE"):
+            path = tmp / (label.replace(" ", "_") + ".txt")
+            path.write_text(f"текст: {label}", encoding="utf-8")
+            docs.append({"label": label, "path": path})
+        v = DocViewer(self.root)
+        v.set_docs(docs)
+        self.assertEqual(v.cur, 0)
+        v.name_var.set("fisa tehnica")                           # без диакритики находит «Fișa tehnică»
+        self.assertEqual([docs[i]["label"] for i in v.shown], ["Fișa tehnică lotul 147"])
+        v.name_var.set("tehnic")
+        self.assertEqual(len(v.shown), 2)
+        v.name_var.set("iso")
+        self.assertEqual((v.shown, v.cur, v.count_var.get()), ([1], 1, "1 из 4"))   # открыт найденный
+        v.set_docs(docs)                                         # следующий участник - поиск остаётся
+        self.assertEqual(v.cur, 1)
+        v.name_var.set("нет такого")
+        self.assertEqual(v.shown, [])
+        v.name_var.set("")
+        self.assertEqual(len(v.shown), 4)
+
     def test_empty_tender_field_asks_before_parent_file(self):
         from unittest import mock
         from src.ui import app as ui

@@ -152,6 +152,30 @@ def latest_result() -> Optional[Path]:
     return next((f for f in files if not f.name.startswith("~$")), None)
 
 
+# Копии, которые шаги пишут рядом с рабочим файлом: «В Excel» - _evaluare, AMDM - _AMDM, уточнения - _clarificari,
+# проверка лотов - _verificat (+ .bak). Работать дальше надо в <база>_verificat.xlsx, а не в последней копии.
+DERIVED = re.compile(r"(?:_AMDM|_evaluare|_clarificari(?: \([^)]*\))?|_verificat|\.bak)$", re.IGNORECASE)
+
+
+def base_result(path: Path) -> Path:
+    """result_<дата>.xlsx, от которого сделана копия (…_verificat_evaluare_AMDM.xlsx -> result_<дата>.xlsx)."""
+    path, stem = Path(path), Path(path).stem
+    while True:
+        new = DERIVED.sub("", stem)
+        if new == stem:
+            return path.with_name(stem + ".xlsx")
+        stem = new
+
+
+def working_result(path: Path) -> Path:
+    """Рабочий файл для продолжения: <база>_verificat.xlsx (проверка лотов), если его нет - сама база."""
+    base = base_result(path)
+    verified = base.with_name(base.stem + "_verificat.xlsx")
+    if verified.is_file():
+        return verified
+    return base if base.is_file() else Path(path)
+
+
 def tender_dirs() -> List[Path]:
     """Скачанные тендеры (downloads/<номер> с manifest.sqlite), последний - первым."""
     dirs = [d for d in (Path(BASE_DIR) / "downloads").glob("*") if (d / "manifest.sqlite").is_file()]
@@ -191,6 +215,7 @@ class App:
         self.all_questions: List[Dict] = []      # все открытые
         self._tidied = False
         self.proc: Optional[subprocess.Popen] = None     # тендер / AMDM / уточнения - отдельным процессом
+        self.task_title = ""
         self.stage: Optional[str] = None
         self.done_stages: List[str] = []
 
@@ -211,6 +236,8 @@ class App:
         self.activity.tick()
         self.tender_var.trace_add("write", lambda *_: self._sync_tender())
         self._sync_tender()
+        for var in (self.result_var, self.tender_var):
+            var.trace_add("write", lambda *_: self._remember_result())
 
         self.handler = QueueHandler(self.log_queue)
         self._attach_log()
@@ -218,6 +245,31 @@ class App:
         self.root.after(1000, self._poll_questions)
         self.sync_answers()
         self.refresh_questions()
+
+    # --- какой result-файл у какого тендера (для «Скачанный тендер») ------------------------------------------
+    def _recent_path(self) -> Path:
+        return Path(self.db).parent / "recent_results.json"
+
+    def _recent_results(self) -> Dict[str, str]:
+        try:
+            return json.loads(self._recent_path().read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+
+    def _remember_result(self):
+        """Тендер и result выбраны - запомнить рабочий файл (<база>_verificat.xlsx) этого тендера."""
+        result, tender = Path(self.result_var.get() or ""), Path(self.tender_var.get() or "")
+        if not (self.result_var.get() and result.is_file() and (tender / "manifest.sqlite").is_file()):
+            return
+        data = self._recent_results()
+        work = str(working_result(result))
+        if data.get(tender.name) == work:
+            return
+        data[tender.name] = work
+        try:
+            self._recent_path().write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+        except OSError:
+            pass
 
     def sync_answers(self):
         """Ответы человека с других ПК (knowledge/answers/*.jsonl после git pull) - в базу, свои - в файл ПК."""
@@ -310,8 +362,13 @@ class App:
             folder = Path(BASE_DIR) / "downloads" / self.start_folder.get()
             if not (folder / "manifest.sqlite").is_file():
                 return False
+            remembered = self._recent_results().get(folder.name)   # файл, с которым работали по этому тендеру
             self.tender_var.set(str(folder))
-            result = latest_result()
+            if remembered and Path(remembered).is_file():
+                result = Path(remembered)
+            else:
+                latest = latest_result()
+                result = working_result(latest) if latest else None
             if result:
                 self.result_var.set(str(result))
         self.mode = mode if mode != "none" else None
@@ -422,8 +479,33 @@ class App:
         self.tabs.bind("<<NotebookTabChanged>>", lambda e: self._tab_changed())
         self.root.protocol("WM_DELETE_WINDOW", self.close)
 
-    def close(self):
-        """Закрытие окна: несохранённые решения проверки - в _verificat.xlsx."""
+    def running_tasks(self) -> List[str]:
+        """Что ещё идёт: отдельный процесс (тендер / AMDM / уточнения), задача окна (оценка, В Excel), очередь AMDM ⟳."""
+        out = []
+        if self.proc is not None and self.proc.poll() is None:
+            out.append(f"«{self.task_title}» (отдельный процесс - без окна доработает незаметно)")
+        elif self.worker is not None and self.worker.is_alive():
+            out.append(f"«{self.task_title}» (оборвётся на месте)")
+        checker = getattr(self.review_tab, "amdm_checker", None) if self.review_tab is not None else None
+        if checker is not None and checker.thread is not None and checker.thread.is_alive() and checker.pending():
+            out.append(f"проверка AMDM по кнопке (в очереди: {checker.pending()})")
+        return out
+
+    def close(self, ask: bool = True):
+        """Закрытие окна: идущие задачи - остановить (спросив); несохранённые решения проверки - в _verificat.xlsx."""
+        running = self.running_tasks()
+        if running:
+            if ask and not messagebox.askyesno(
+                    "Закрыть окно", "Ещё идёт:\n- " + "\n- ".join(running)
+                    + "\n\nОстановить и закрыть окно? (Нет - окно остаётся открытым)"):
+                return
+            self.stop()
+            proc = self.proc
+            if proc is not None:
+                try:
+                    proc.wait(timeout=5)
+                except Exception:
+                    proc.kill()
         if self.review_tab is not None and self.review_tab.book is not None:
             if self.review_tab.save(quiet=True) is None and not messagebox.askyesno(
                     "Проверка лотов", "Решения не записаны в Excel (они есть в базе). Закрыть всё равно?"):
@@ -481,6 +563,7 @@ class App:
         return False
 
     def _begin(self, title: str):
+        self.task_title = title
         self.stop_flag.clear()
         self.stage, self.done_stages = None, []
         self.stage_var.set(f"{title}: запуск…")
