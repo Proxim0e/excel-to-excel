@@ -17,7 +17,7 @@ from typing import List, Optional, Tuple
 from src.amdm.models import (OfferRegistration, RegistryRecord, CheckResult,
                              OK, CHECK, FAIL, NO_DM, IN_PROGRESS)
 from src.amdm.medical import HUMAN_NO, not_medical, type_word
-from src.amdm.parse import fold, compact, model_tokens
+from src.amdm.parse import fold, compact, model_tokens, split_models
 
 LEGAL_FORMS = re.compile(
     r'\b(s\.?r\.?l|s\.?a|s\.?p\.?a|gmbh(?:\s*&\s*co\.?\s*kg(?:aa)?)?|kg(?:aa)?|ag|ltd|limited|inc|corp(?:oration)?|'
@@ -83,6 +83,16 @@ def model_matches(offered: Optional[str], record: RegistryRecord) -> Tuple[Optio
     offered_compact = compact(offered)
     # Значения полей реестра по отдельности: «SD-T, SD-L, SD-Y» - три кода семейства
     items = [(i.strip(), f) for f in (record.model, record.catalog) if f for i in re.split(r"[,;]", f) if i.strip()]
+    # модели оферты по отдельности, код с пробелом склеен: «M82750 63/5 M82750 63/10» -> M8275063/5, M8275063/10;
+    # точное совпадение одной из них с моделью / каталожным номером реестра - лучшее
+    models = split_models(offered)
+    for m in models:
+        cm = compact(m)
+        if not re.search(r"\d", m):          # слово без цифр («RULOU») - не код; целиком сравнивается ниже
+            continue
+        for item, field in items:
+            if cm and cm == compact(item):
+                return True, item
     sizes = _numbers(offered)
     for item, field in items:
         c = compact(item)
@@ -98,7 +108,10 @@ def model_matches(offered: Optional[str], record: RegistryRecord) -> Tuple[Optio
             field_sizes = _numbers(item) or _numbers(field)
             if not (len(field_sizes) >= 2 and len(sizes) >= 2 and field_sizes != sizes):
                 return True, item
-    tokens = model_tokens(offered)
+    # коды - по склеенным моделям: обрывок «M82750» подходил к любой модели серии и /5 не отличался от /10
+    tokens = []
+    for m in models:
+        tokens += [t for t in model_tokens(m) if t not in tokens]
     for tok in tokens:
         c = compact(tok)
         if len(c) >= 3 and c in hay:
@@ -272,7 +285,8 @@ def check_offer(offer: OfferRegistration, records: dict, site_checked: set,
 
         status = OK if (p_ok and m_ok is True and not reasons) else CHECK
         if status == OK:
-            reasons = [f"Найден: {record.producer}; {record.model or record.catalog or record.name}"]
+            reasons = [f"Найден: {record.producer}; {record.model or record.catalog or record.name}"
+                       + (f"; модель совпала: «{m_what}»" if m_what else "")]
         results.append(CheckResult(offer, dm, status, reasons, record))
     return results
 

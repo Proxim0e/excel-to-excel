@@ -8,6 +8,7 @@ import tkinter as tk
 from tkinter import ttk
 from typing import Callable, List, Optional, Tuple
 
+from src.amdm.parse import split_models
 from src.excel import review as rv
 from src.excel.verdicts import BLUE, GREEN, RED, YELLOW
 
@@ -18,8 +19,6 @@ DARK = {GREEN, RED, rv.NAVY}          # на тёмной заливке - бе�
 SELECTED = "#1565c0"
 FIELD = re.compile(r"^[^\W\d][\w .()/-]{0,30}?:\s*(.+)$")   # «Producator: X», «Țara: Y», «Model: Z»
 MODEL_KEY = re.compile(r"^\s*(model|cod|catalog|ref|art)", re.IGNORECASE)
-MODEL_SPLIT = re.compile(r"\s*[+;,|&]\s*|\s+/\s+|\s+(?:și|si|şi|and|и)\s+", re.IGNORECASE)
-CODE_WORD = re.compile(r"\d")
 AMDM_BG = {"verde": "#00B050", "galben": "#FFFF00", "rosu": "#FF0000", "fara DM": "#FFC000", "neverificat": "#dddddd"}
 
 
@@ -128,17 +127,13 @@ class OfferStrip:
 
     @staticmethod
     def parts(line: str, value: str) -> List[str]:
-        """Несколько моделей / кодов в одной строке («A + B», «A, B», «A; B», «A și B», «A / B») - по отдельности.
-        Только для строк «Model / Cod / Catalog / Ref / Art»; «/» без пробелов - часть кода (AB-12/3)."""
+        """Модели строки «Model / Cod / Catalog / Ref / Art» по отдельности - как их сравнивает AMDM
+        (src.amdm.parse.split_models): «A + B», «A, B», «A și B»; код с пробелом склеен («M82750 63/5» ->
+        M8275063/5, как в каталоге). Пусто - кнопки не нужны (одна модель, записанная как есть)."""
         if not MODEL_KEY.match(line):
             return []
-        items = [p.strip(" .") for p in MODEL_SPLIT.split(value)]
-        items = [p for p in items if p]
-        if len(items) == 1:             # только пробелы / переносы: делим, если каждое слово - код (есть цифра)
-            words = items[0].split()
-            if len(words) > 1 and all(CODE_WORD.search(w) and len(w) >= 3 for w in words):
-                items = words
-        return items if len(items) > 1 else []
+        items = split_models(value)
+        return items if len(items) > 1 or (items and items[0] != value.strip(" .")) else []
 
     def copy(self, widget, value: str):
         """Значение в буфер обмена, строка на миг зеленеет."""

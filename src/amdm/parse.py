@@ -116,6 +116,40 @@ def model_tokens(text: Optional[str]) -> List[str]:
     return out
 
 
+MODEL_SPLIT = re.compile(r"\s*[+;,|&]\s*|\s+/\s+|\s+(?:și|si|şi|and|и)\s+", re.IGNORECASE)
+
+
+def split_models(text: Optional[str]) -> List[str]:
+    """
+    Модели из строки «Model:» по отдельности.
+    - Явные разделители: «A + B», «A, B», «A; B», «A și B», «A / B» (слэш без пробелов - часть кода: AB-12/3).
+    - Только пробелы, и в каждом слове есть цифра: код, записанный с пробелом, склеивается - слово с цифры
+      продолжает предыдущее, начинающееся с буквы: «M82750 63/5 M82750 63/10» -> M8275063/5, M8275063/10
+      (так в каталоге); если первое слово с цифры - каждое слово отдельная модель («0013.F02-… 0013.F03-…»).
+    - Есть слово без цифры («CUET44S 10 ml», «Vacutainer 200») - одна модель как есть.
+    """
+    out: List[str] = []
+    for item in MODEL_SPLIT.split(str(text or "")):
+        item = item.strip(" .")
+        if not item:
+            continue
+        words = item.split()
+        if len(words) > 1 and all(re.search(r"\d", w) for w in words):
+            if re.match(r"[A-Za-z]", words[0]):
+                groups: List[str] = []
+                for w in words:
+                    if re.match(r"[A-Za-z]", w) or not groups:
+                        groups.append(w)
+                    else:
+                        groups[-1] += w
+                out.extend(groups)
+            else:
+                out.extend(words)
+        else:
+            out.append(item)
+    return [m for i, m in enumerate(out) if m not in out[:i]]
+
+
 def compact(s: Optional[str]) -> str:
     """Для сравнения кодов: без регистра, пробелов, точек, дефисов, слэшей."""
     return re.sub(r'[\s.\-/_]', '', fold(s or ""))

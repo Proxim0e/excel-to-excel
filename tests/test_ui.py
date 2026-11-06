@@ -113,6 +113,8 @@ class AppTests(unittest.TestCase):
                          ["0013.F02-UNI-S-E-21", "0013.F03-UNI-S-E-21", "0013.F05-UNI-S-E-21"])   # через пробел
         self.assertEqual(parts("Model: x", "Vacutainer 200"), [])           # слово без цифры - одна модель
         self.assertEqual(parts("Model: x", "CUET44S 10 ml"), [])
+        self.assertEqual(parts("Model: x", "M82750 63/5 M82750 63/10"), ["M8275063/5", "M8275063/10"])  # склеены
+        self.assertEqual(parts("Model: x", "M82750 63/5"), ["M8275063/5"])        # одна, но склеенная - кнопка
         self.assertEqual(parts("Țara: x", "Italia, Franța"), [])            # не модель - не делим
 
     def test_review_tab_confirm_registration(self):

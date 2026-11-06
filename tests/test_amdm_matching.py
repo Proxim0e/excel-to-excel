@@ -37,6 +37,20 @@ class ModelTests(unittest.TestCase):
         for offered, record in cases:
             self.assertIs(model_matches(offered, record)[0], True, offered)
 
+    def test_code_written_with_space_is_glued(self):
+        """21643233, лот 354 (MED-M): «M82750 63/5 M82750 63/10» - две модели, в реестре каталог M8275063/5
+        (DM000267272) и M8275063/10 (DM000267273). Раньше совпадал обрывок «M82750» - /5 не отличался от /10."""
+        from src.amdm.parse import split_models
+        self.assertEqual(split_models("M82750 63/5 M82750 63/10"), ["M8275063/5", "M8275063/10"])
+        self.assertEqual(split_models("0013.F02-UNI 0013.F03-UNI"), ["0013.F02-UNI", "0013.F03-UNI"])
+        self.assertEqual(split_models("CUET44S 10 ml"), ["CUET44S 10 ml"])
+        r5 = R(dm="DM000267272", model="500ml Canisters with gel, Carton of 5", catalog="M8275063/5")
+        r10 = R(dm="DM000267273", model="500ml Canisters with gel, Carton of 10", catalog="M8275063/10")
+        self.assertEqual(model_matches("M82750 63/5 M82750 63/10", r5), (True, "M8275063/5"))
+        self.assertEqual(model_matches("M82750 63/5 M82750 63/10", r10), (True, "M8275063/10"))
+        self.assertIs(model_matches("M82750 63/5", r10)[0], False)
+        self.assertIs(model_matches("M82750 63/10", r5)[0], False)
+
     def test_mismatches(self):
         self.assertIs(model_matches("56 MM X 18 M, RULOU", R(dm="x", model="80 MM X 30 M, RULOU"))[0], False)
         ok, what = model_matches("PFS01-01523230", R(dm="x", model="STERILE HOT SNARE", catalog="PFS01-15223230"))
