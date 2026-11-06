@@ -389,6 +389,25 @@ class AppTests(unittest.TestCase):
             self.assertTrue(self.app.apply_start("continue"))
             self.assertEqual(Path(self.app.result_var.get()), other)
 
+    def test_poll_questions_survives_memory_error(self):
+        """MemoryError в опросе вопросов не останавливает опрос; одна и та же ошибка - в лог один раз."""
+        scheduled = []
+        self.app.root.after = lambda ms, fn=None, *a: scheduled.append(ms)
+
+        def boom():
+            raise MemoryError()
+        self.app.refresh_questions = boom
+        with self.assertLogs("ui", level="WARNING") as logs:
+            self.app._poll_questions()
+            self.app._poll_questions()
+        self.assertEqual(scheduled, [5000, 5000])
+        self.assertEqual(len(logs.records), 1)
+        self.assertIn("памяти Windows", logs.output[0])
+        self.app.refresh_questions = lambda: 0          # память освободилась - обычный опрос
+        self.app._poll_questions()
+        self.assertEqual(scheduled[-1], 1500)
+        del self.app.root.after
+
     def test_close_stops_running_process_after_asking(self):
         from unittest import mock
         from src.ui import app as ui

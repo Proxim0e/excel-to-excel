@@ -905,9 +905,22 @@ class App:
 
     # --- вопросы --------------------------------------------------------------------------------------------
     def _poll_questions(self):
-        new = self.refresh_questions()
-        if new:
-            self.popup()
+        # следующий опрос планируется всегда: раньше любая ошибка (MemoryError при нехватке памяти Windows,
+        # занятая база) останавливала опрос вопросов до перезапуска окна
+        try:
+            new = self.refresh_questions()
+            if new:
+                self.popup()
+            self._poll_error = None
+        except Exception as e:
+            text = f"{type(e).__name__}: {e}".strip(": ")
+            if text != getattr(self, "_poll_error", None):      # одна и та же ошибка - в лог один раз
+                hint = " - не хватает памяти Windows, закройте лишние программы / вкладки" \
+                    if isinstance(e, MemoryError) else ""
+                logger.warning(f"[UI] опрос вопросов: {text}{hint}; повтор через 5 с")
+                self._poll_error = text
+            self.root.after(5000, self._poll_questions)
+            return
         self.root.after(1500, self._poll_questions)
 
     @staticmethod
