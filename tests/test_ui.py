@@ -431,6 +431,16 @@ class AppTests(unittest.TestCase):
         v.search_var.set("U223-11BE")                            # «Копировать» - текст поиска в буфер
         self.assertEqual(v.copy_search(), "U223-11BE")
         self.assertEqual(self.root.clipboard_get(), "U223-11BE")
+        calls = []                                               # «Папка» - Проводник с выделенным файлом
+        v.launch = calls.append
+        f = Path(self.tmp.name) / "doc.pdf"
+        f.write_bytes(b"x")
+        v.docs[v.cur]["path"] = str(f)
+        v.open_folder()
+        self.assertEqual(calls, [["explorer", f"/select,{f.resolve()}"]])
+        v.docs[v.cur]["path"] = str(Path(self.tmp.name) / "нет.pdf")       # файла нет - его папка
+        v.open_folder()
+        self.assertEqual(calls[-1], ["explorer", str(Path(self.tmp.name).resolve())])
 
     def test_empty_tender_field_asks_before_parent_file(self):
         from unittest import mock

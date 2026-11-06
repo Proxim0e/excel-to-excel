@@ -4,6 +4,7 @@
 Используется во вкладке «Проверка лотов»; при открытии документа сразу ищется код модели / номер DM.
 """
 import os
+import subprocess
 import tkinter as tk
 import unicodedata
 from pathlib import Path
@@ -38,7 +39,8 @@ class DocViewer:
         self.combo.bind("<<ComboboxSelected>>", lambda e: self._combo_picked())
         self.count_var = tk.StringVar()
         ttk.Label(bar, textvariable=self.count_var, foreground="#555").pack(side="left", padx=2)
-        ttk.Button(bar, text="Открыть PDF", command=self.open_pdf).pack(side="left", padx=4)
+        ttk.Button(bar, text="Открыть PDF", command=self.open_pdf).pack(side="left", padx=(4, 0))
+        ttk.Button(bar, text="Папка", command=self.open_folder).pack(side="left", padx=(2, 4))
         ttk.Label(bar, text="Поиск:").pack(side="left", padx=(10, 2))
         self.search_var = tk.StringVar()
         se = ttk.Entry(bar, textvariable=self.search_var, width=24)
@@ -161,6 +163,22 @@ class DocViewer:
             self.frame.clipboard_append(text)
             self.hits_var.set("скопировано")
         return text
+
+    def open_folder(self):
+        """Расположение файла: Проводник с выделенным документом (файла нет - его папка, если есть)."""
+        if not (0 <= self.cur < len(self.docs)):
+            return
+        path = Path(self.docs[self.cur]["path"]).resolve()
+        if path.is_file():
+            self.launch(["explorer", f"/select,{path}"])
+        elif path.parent.is_dir():
+            self.launch(["explorer", str(path.parent)])
+        else:
+            messagebox.showwarning("Папка", f"Папка не найдена: {path.parent}")
+
+    @staticmethod
+    def launch(args: List[str]):
+        subprocess.Popen(args)        # noqa: Проводник Windows
 
     def open_pdf(self):
         index = self.cur
