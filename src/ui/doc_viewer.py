@@ -169,16 +169,18 @@ class DocViewer:
         if not (0 <= self.cur < len(self.docs)):
             return
         path = Path(self.docs[self.cur]["path"]).resolve()
+        # строкой, а не списком: Popen взял бы в кавычки весь «/select,C:\Users\Capcs 1\...» (путь с пробелом),
+        # Проводник такого не понимает и открывает «Документы»; нужно /select,"путь"
         if path.is_file():
-            self.launch(["explorer", f"/select,{path}"])
+            self.launch(f'explorer /select,"{path}"')
         elif path.parent.is_dir():
-            self.launch(["explorer", str(path.parent)])
+            self.launch(f'explorer "{path.parent}"')
         else:
             messagebox.showwarning("Папка", f"Папка не найдена: {path.parent}")
 
     @staticmethod
-    def launch(args: List[str]):
-        subprocess.Popen(args)        # noqa: Проводник Windows
+    def launch(command: str):
+        subprocess.Popen(command)     # noqa: Проводник Windows (командная строка как есть)
 
     def open_pdf(self):
         index = self.cur

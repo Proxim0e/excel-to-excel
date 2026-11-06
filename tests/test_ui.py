@@ -437,10 +437,10 @@ class AppTests(unittest.TestCase):
         f.write_bytes(b"x")
         v.docs[v.cur]["path"] = str(f)
         v.open_folder()
-        self.assertEqual(calls, [["explorer", f"/select,{f.resolve()}"]])
+        self.assertEqual(calls, [f'explorer /select,"{f.resolve()}"'])     # кавычки - только вокруг пути
         v.docs[v.cur]["path"] = str(Path(self.tmp.name) / "нет.pdf")       # файла нет - его папка
         v.open_folder()
-        self.assertEqual(calls[-1], ["explorer", str(Path(self.tmp.name).resolve())])
+        self.assertEqual(calls[-1], f'explorer "{Path(self.tmp.name).resolve()}"')
 
     def test_empty_tender_field_asks_before_parent_file(self):
         from unittest import mock
