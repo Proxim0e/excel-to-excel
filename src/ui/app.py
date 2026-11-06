@@ -29,6 +29,7 @@ from src.history.db import DEFAULT_DB, connect
 from src.history import sync as answers_sync
 from src.history.review import REASONS
 from src.ui import clipboard
+from src.ui import processes as procs
 from src.ui.activity import Activity, ActivityView
 from src.ui.card_form import CardForm, Tooltip
 from src.ui.layout import Layout
@@ -243,6 +244,9 @@ class App:
         self._attach_log()
         self.root.after(200, self._poll_log)
         self.root.after(1000, self._poll_questions)
+        self._mem_low = False                # предупреждение о нехватке памяти уже было
+        self._mem_scan: Optional[queue.Queue] = None
+        self.root.after(2000, self._poll_memory)
         self.sync_answers()
         self.refresh_questions()
 
@@ -415,6 +419,13 @@ class App:
         # этап: название, прогресс, счётчики, таймер, последнее действие; ниже - цепочка этапов мелко
         status = ttk.Frame(self.root, padding=(6, 0))
         status.pack(fill="x")
+        self.mem_var = tk.StringVar(value="Память…")      # свободная память Windows; щелчок - процессы
+        self.mem_label = tk.Label(status, textvariable=self.mem_var, cursor="hand2", foreground="#555",
+                                  font=("Segoe UI", 9))
+        self.mem_label.pack(side="right", padx=8)
+        self.mem_label.bind("<Button-1>", lambda e: self.open_processes())
+        Tooltip(self.mem_label, lambda: "Свободная виртуальная память Windows. Щелчок - процессы программы и "
+                                        "кто занимает память; лишние можно завершить.")
         ttk.Label(status, textvariable=self.stage_var, font=("Segoe UI", 10, "bold")).pack(side="left")
         self.progress = ttk.Progressbar(status, length=220, mode="determinate")
         self.progress.pack(side="left", padx=8)
@@ -904,6 +915,59 @@ class App:
         ttk.Button(row, text="Сохранить", command=save).pack(side="left", padx=4)
 
     # --- вопросы --------------------------------------------------------------------------------------------
+    # --- память Windows и процессы программы ----------------------------------------------------------------
+    def _poll_memory(self):
+        """Раз в 10 с - свободная виртуальная память в верхней строке; мало - предупреждение (один раз, пока
+        память не освободится) с тем, кто её занимает, и предложение завершить лишние процессы."""
+        try:
+            m = procs.memory()
+            self.mem_var.set(f"Память: {procs.gb(m.commit_free)}" + (" - мало!" if m.low else ""))
+            self.mem_label.configure(foreground="#c62828" if m.low else "#555")
+            if m.low and not self._mem_low:
+                self._mem_low = True
+                self._start_mem_scan()
+            elif m.commit_free > procs.OK_MB:
+                self._mem_low = False
+            self._finish_mem_scan()
+        except Exception as e:
+            logger.debug(f"[UI] память: {e}")
+        self.root.after(10000 if self._mem_scan is None else 500, self._poll_memory)
+
+    def _start_mem_scan(self):
+        """Кто занимает память и какие процессы лишние - в фоне (первый обход процессов - несколько секунд)."""
+        out: queue.Queue = queue.Queue()
+        self._mem_scan = out
+
+        def scan():
+            try:
+                out.put((procs.memory(), procs.top_consumers(), [p for p in procs.our_processes() if p.extra]))
+            except Exception as e:
+                out.put(e)
+        threading.Thread(target=scan, daemon=True, name="mem-scan").start()
+
+    def _finish_mem_scan(self):
+        if self._mem_scan is None or self._mem_scan.empty():
+            return
+        res, self._mem_scan = self._mem_scan.get(), None
+        if isinstance(res, Exception):
+            return
+        m, top, extra = res
+        who = ", ".join(f"{n} {procs.gb(mb)}" for n, mb in top)
+        logger.warning(f"[UI] Мало памяти Windows: свободно {procs.gb(m.commit_free)} из {procs.gb(m.commit_total)}"
+                       f" - возможны ошибки MemoryError / CreateDIBSection. Больше всего занимают: {who}. "
+                       f"Закройте лишние программы / вкладки (или увеличьте файл подкачки).")
+        self.activity.note(f"Мало памяти Windows: свободно {procs.gb(m.commit_free)}", ok=False)
+        if extra and messagebox.askyesno(
+                "Мало памяти", f"Свободно {procs.gb(m.commit_free)} памяти Windows.\n\nЛишние процессы "
+                f"({len(extra)} шт., {procs.gb(sum(p.mb for p in extra))}) остались от закрытого окна программы "
+                f"или PyCharm. Завершить их?", parent=self.root):
+            for p in extra:
+                procs.kill(p)
+                logger.info(f"[UI] завершён процесс {p.pid} ({p.what}, {p.kind}, {procs.gb(p.mb)})")
+
+    def open_processes(self):
+        procs.ProcessWindow(self.root, on_log=logger.info)
+
     def _poll_questions(self):
         # следующий опрос планируется всегда: раньше любая ошибка (MemoryError при нехватке памяти Windows,
         # занятая база) останавливала опрос вопросов до перезапуска окна

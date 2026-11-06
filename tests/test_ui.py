@@ -389,6 +389,35 @@ class AppTests(unittest.TestCase):
             self.assertTrue(self.app.apply_start("continue"))
             self.assertEqual(Path(self.app.result_var.get()), other)
 
+    def test_memory_monitor_warns_once_and_offers_cleanup(self):
+        """Мало памяти: надпись красная, в лог - кто занимает, вопрос «завершить лишние?»; один раз за эпизод."""
+        from unittest import mock
+        from src.ui import app as ui
+        from src.ui import processes as pr
+        low = pr.Memory(300, 21000, 6000, 19000)
+        extra = [pr.Proc(77, "лишний: осталось от закрытого окна", "python -m src.amdm", 250, 0, True, [77])]
+        killed, asked = [], []
+        self.app.root.after = lambda ms, fn=None, *a: None
+        with mock.patch.object(pr, "memory", return_value=low), \
+                mock.patch.object(pr, "top_consumers", return_value=[("opera", 5300)]), \
+                mock.patch.object(pr, "our_processes", return_value=extra), \
+                mock.patch.object(pr, "kill", side_effect=lambda p: killed.append(p.pid) or 1), \
+                mock.patch.object(ui.messagebox, "askyesno", side_effect=lambda *a, **k: asked.append(a) or True), \
+                self.assertLogs("ui", level="INFO") as logs:
+            self.app._poll_memory()
+            self.assertEqual(self.app.mem_var.get(), "Память: 300 МБ - мало!")
+            import time
+            end = time.time() + 10
+            while not asked and time.time() < end:           # фоновый обход процессов
+                time.sleep(0.05)
+                self.app._poll_memory()
+            self.app._poll_memory()                          # всё ещё мало - второй раз не спрашивает
+        del self.app.root.after
+        self.assertEqual((killed, len(asked)), ([77], 1))
+        warn = [r for r in logs.output if "Мало памяти" in r]
+        self.assertEqual(len(warn), 1)
+        self.assertIn("opera 5,2 ГБ", warn[0])
+
     def test_poll_questions_survives_memory_error(self):
         """MemoryError в опросе вопросов не останавливает опрос; одна и та же ошибка - в лог один раз."""
         scheduled = []
